@@ -1,7 +1,7 @@
 ---
 name: claude-egress-guard
-description: "Use when pinning Claude Code to one egress on Linux — installs a fail-closed gate, kernel net jail, and drills it."
-version: 1.2.0
+description: "Use when deploying or auditing Claude Code on Linux — one-stop safe setup: preflight, egress gate, operation baseline, incident drills."
+version: 1.3.0
 author: claude-egress-guard contributors
 license: Apache-2.0
 platforms: [linux]
@@ -11,12 +11,24 @@ metadata:
     category: devops
 ---
 
-# Claude Egress Guard
+# Claude Code: safe deployment and operation
 
-Install a fail-closed egress gate in front of Claude Code on a Linux host: every
-invocation must pass an exit-address check, the client and its children get proxy
-variables, and (by default) the whole process tree is jailed with a kernel-level
-IP allow list. Anything unexpected refuses to start instead of falling back.
+A one-stop skill for running Claude Code on a Linux host you control: bring a bare
+machine to a working, gated client, keep it inside one verified egress, and know
+what to do when something goes wrong.
+
+Four parts, in the order they matter:
+
+| Part | What it covers | Where |
+| --- | --- | --- |
+| **Deploy** | eligibility, host baseline, proxy proven stable, client installed but not launched, first login through the gate | `references/zero-to-deployed.md`, `preflight` |
+| **Egress** | one verified exit, proxy injection, kernel jail for the whole process tree, self-heal after updates, no fallback | `install` / `verify --deep` / `drill` / `set-exit` |
+| **Operate** | credentials, client settings, secrets, working-directory blast radius, backups, monitoring | `references/safe-operation.md` §1-5 |
+| **Respond** | exit change, verification request, leaked credential, suspected bypass | `references/safe-operation.md` §6 |
+
+The enforcement core is still one binary: `claude` becomes a gate that refuses to
+start when the exit is not the one you configured. The rest of the skill exists so
+that the gate is installed in the right order, and stays meaningful afterwards.
 
 ## When to use
 
@@ -28,6 +40,9 @@ IP allow list. Anything unexpected refuses to start instead of falling back.
   already polluted.
 - The operator asks to "lock down", "pin", or "verify" the Claude egress, or to
   prove it still works after a package update.
+- The operator asks whether an existing Claude deployment is *safe* in general:
+  credentials, client settings, secrets, backups, monitoring, and what to do in
+  an incident. Audit against `references/safe-operation.md`.
 - The host is fresh and the operator has never had an account: start with
   `references/zero-to-deployed.md` instead of improvising an order of operations.
 
@@ -190,4 +205,5 @@ Left:      <what the operator still has to do, if anything>
 
 - `references/agent-playbook.md` — full command sequence, allow-list rules, evidence record
 - `references/zero-to-deployed.md` — phase-by-phase runbook for a fresh host with no account
+- `references/safe-operation.md` — credentials, client settings, secrets, blast radius, monitoring, incident response
 - `references/troubleshooting.md` — symptom → cause → fix table

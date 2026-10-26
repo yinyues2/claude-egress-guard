@@ -1,18 +1,27 @@
 # claude-egress-guard（中文说明）
 
-**给 agent 用的部署 skill，也是给人用的一键安装脚本：把 Linux 上的 Claude Code
-钉死在一个出口上，出口不对就拒绝启动。**
-
 [![ci](https://github.com/yinyues2/claude-egress-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/yinyues2/claude-egress-guard/actions/workflows/ci.yml)
+
+**一站式 skill + 一键安装：在 Linux 上安全地部署和运行 Claude Code——从裸机到可用、
+可审计的客户端，以及出问题时知道怎么处置。**
 
 在 VPS 上跑 Claude Code，最容易出问题的不是安装，而是**出口泄漏**：写在
 `/etc/profile.d` 里的 `claude()` 函数只覆盖交互式 shell，Python、`sh -c`、
 cron、systemd 和任何直接调用 `/usr/bin/claude` 的路径都会绕过去；代理中途挂掉时，
 客户端还会悄悄从机房 IP 直连出去。
 
-这个项目在**二进制层**补上这个洞：`claude` 命令本身变成闸门，启动前核验代理的真实
-出口地址，注入代理变量，并可选地把整个进程树关进内核级 IP 白名单。任何异常都拒绝
-启动，没有「继续执行」的分支。
+所以项目分成四块，只有一个是强制核心：
+
+| 部分 | 覆盖什么 | 入口 |
+| --- | --- | --- |
+| **部署** | 资格判断、主机基线、代理先稳定、装客户端但不启动、首次登录走闸门 | `preflight`、[`zero-to-deployed.md`](skills/claude-egress-guard/references/zero-to-deployed.md) |
+| **出口** | 固定出口、注入代理、内核白名单、更新自愈、失败不回落 | `install`、`verify --deep`、`drill`、`set-exit` |
+| **运行** | 凭据、客户端设置、密钥卫生、影响范围、备份、监控 | [`safe-operation.md`](skills/claude-egress-guard/references/safe-operation.md) |
+| **处置** | 出口变化、被要求验证、凭据泄漏、怀疑绕过 | [`safe-operation.md`](skills/claude-egress-guard/references/safe-operation.md) §6 |
+
+强制核心仍然是二进制闸门：`claude` 命令本身核验代理的真实出口地址、注入代理变量，
+可选地把整个进程树关进内核级 IP 白名单。任何异常都拒绝启动，没有回落。另外三块存在
+的意义，是让这道闸门**按正确顺序装上**，并且在第一周之后仍然有意义。
 
 ---
 

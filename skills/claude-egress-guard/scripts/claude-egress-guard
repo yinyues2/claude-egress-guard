@@ -14,7 +14,7 @@
 # Everything it replaces is copied to the backup directory first.
 set -u
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 MARKER="claude-egress-guard"
 
 CONF_REL="/etc/claude-egress-guard.conf"

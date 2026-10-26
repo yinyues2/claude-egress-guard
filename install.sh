@@ -11,7 +11,7 @@
 set -u
 
 REPO="yinyues2/claude-egress-guard"
-PINNED_REF="v1.2.0"
+PINNED_REF="v1.3.0"
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 WORK=""
 

@@ -2,9 +2,8 @@
 
 [![ci](https://github.com/yinyues2/claude-egress-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/yinyues2/claude-egress-guard/actions/workflows/ci.yml)
 
-**A deployment skill for agents, plus a one-command installer for humans, that
-pins Claude Code on a Linux host to one egress and refuses to start when that
-path is unavailable.**
+**A one-stop skill and installer for running Claude Code safely on a Linux host:
+from a bare machine to a gated client, then keeping it that way.**
 
 Claude Code on a VPS is easy to install and easy to leak. A shell alias or a
 `claude()` function only covers interactive shells: Python, `sh -c`, cron,
@@ -12,10 +11,20 @@ systemd units and anything calling `/usr/bin/claude` walk straight past it, and 
 proxy that dies mid-session silently turns into a direct connection from the
 datacenter IP.
 
-This project closes that gap at the binary level: the `claude` command itself
-becomes a gate that verifies the proxy's real exit address, injects the proxy
-environment, and optionally jails the whole process tree with a kernel IP allow
-list. Anything unexpected refuses to start. There is no fallback.
+So the project is organized in four parts, with one enforcement core:
+
+| Part | What it covers | Entry point |
+| --- | --- | --- |
+| **Deploy** | eligibility, host baseline, proxy proven stable, client installed but not launched, first login through the gate | `preflight`, [`zero-to-deployed.md`](skills/claude-egress-guard/references/zero-to-deployed.md) |
+| **Egress** | one verified exit, proxy injection, kernel jail for the whole process tree, self-heal after updates, no fallback | `install`, `verify --deep`, `drill`, `set-exit` |
+| **Operate** | credentials, client settings, secrets, blast radius, backups, monitoring | [`safe-operation.md`](skills/claude-egress-guard/references/safe-operation.md) |
+| **Respond** | exit changed, verification request, leaked credential, suspected bypass | [`safe-operation.md`](skills/claude-egress-guard/references/safe-operation.md) §6 |
+
+The enforcement core is still the binary gate: `claude` itself verifies the
+proxy's real exit address, injects the proxy environment, and optionally jails the
+whole process tree with a kernel IP allow list. Anything unexpected refuses to
+start; there is no fallback. The other three parts exist so that the gate is
+installed in the right order and stays meaningful after the first week.
 
 ---
 

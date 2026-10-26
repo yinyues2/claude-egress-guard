@@ -1,11 +1,13 @@
 # claude-egress-guard
 
-> A deployment skill for agents, plus a one-command installer, that pins Claude
-> Code on a Linux host to one verified egress and refuses to start otherwise.
+> A one-stop skill and installer for running Claude Code safely on a Linux host:
+> host preflight, fail-closed egress gate, safe-operation baseline, incident drills.
 
 ## Docs
 
 - [Skill](https://github.com/yinyues2/claude-egress-guard/blob/main/skills/claude-egress-guard/SKILL.md): deployment contract — four facts, three authorization tiers, install/verify/drill, guardrails
+- [Zero to deployed](https://github.com/yinyues2/claude-egress-guard/blob/main/skills/claude-egress-guard/references/zero-to-deployed.md): nine phases from eligibility to maintenance
+- [Safe operation](https://github.com/yinyues2/claude-egress-guard/blob/main/skills/claude-egress-guard/references/safe-operation.md): credentials, client settings, secrets, blast radius, monitoring, incident response
 - [Agent playbook](https://github.com/yinyues2/claude-egress-guard/blob/main/skills/claude-egress-guard/references/agent-playbook.md): step-by-step commands, allow-list rules, evidence record
 - [Troubleshooting](https://github.com/yinyues2/claude-egress-guard/blob/main/skills/claude-egress-guard/references/troubleshooting.md): symptom → cause → fix
 - [AGENTS.md](https://github.com/yinyues2/claude-egress-guard/blob/main/AGENTS.md): machine entry point

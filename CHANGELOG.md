@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog; versions use semantic versioning.
 
+## [1.3.0] - 2026-10-27
+
+### Changed
+
+- Repositioned from "an egress gate" to a one-stop Claude Code deployment and
+  operation skill. The binary gate stays the enforcement core; the skill now names
+  four parts explicitly — deploy, egress, operate, respond — in `SKILL.md`, both
+  READMEs, `AGENTS.md` and `llms.txt`.
+
+### Added
+
+- `references/safe-operation.md`: credential handling, client settings (no proxy
+  in `settings.json`, keep permission prompts, review hooks and MCP servers,
+  one installation), secrets in the working tree, working-directory blast radius,
+  monitoring, incident response for exit changes / verification requests / leaked
+  credentials / suspected bypass, and update discipline.
+
 ## [1.2.0] - 2026-10-27
 
 ### Added

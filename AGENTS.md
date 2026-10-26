@@ -6,16 +6,20 @@ file, then load [`skills/claude-egress-guard/SKILL.md`](skills/claude-egress-gua
 
 ## What this repository is
 
-A deployment skill plus an installer for a fail-closed egress gate in front of
-Claude Code. It is not a proxy and not a VPN: it makes the `claude` binary refuse
-to start unless traffic leaves through one verified exit.
+A one-stop deployment and operation skill for Claude Code on Linux: host
+preflight, fail-closed egress gate, safe-operation baseline and incident drills.
+It is not a proxy and not a VPN: it makes the `claude` binary refuse to start
+unless traffic leaves through one verified exit, then covers what keeps that true
+over time.
 
 ## Read order
 
 1. `skills/claude-egress-guard/SKILL.md` — the contract (facts, tiers, guardrails).
-2. `skills/claude-egress-guard/references/agent-playbook.md` — commands and decision points.
-3. `skills/claude-egress-guard/references/troubleshooting.md` — when a check fails.
-4. `SECURITY.md` — threat model, known limitations, what is out of scope.
+2. `skills/claude-egress-guard/references/zero-to-deployed.md` — phase-by-phase for a fresh host.
+3. `skills/claude-egress-guard/references/safe-operation.md` — credentials, settings, secrets, monitoring, incident response.
+4. `skills/claude-egress-guard/references/agent-playbook.md` — commands and decision points.
+5. `skills/claude-egress-guard/references/troubleshooting.md` — when a check fails.
+6. `SECURITY.md` — threat model, known limitations, what is out of scope.
 
 ## Operating contract
 
