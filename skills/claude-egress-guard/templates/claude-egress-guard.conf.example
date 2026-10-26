@@ -33,6 +33,9 @@ CHECK_BIN="/usr/local/lib/claude-egress-guard/egress-check.sh"
 # Mirror path: the gate repairs this file if a package update replaces it.
 ALT_PATH="/usr/bin/claude"
 
+# 1 = every refusal is also written to journald (tag: claude-egress-guard).
+LOG_REFUSALS=0
+
 # Seconds allowed for each probe.
 CHECK_TIMEOUT=6
 

@@ -1,7 +1,7 @@
 ---
 name: claude-egress-guard
 description: "Use when pinning Claude Code to one egress on Linux — installs a fail-closed gate, kernel net jail, and drills it."
-version: 1.0.0
+version: 1.1.0
 author: claude-egress-guard contributors
 license: Apache-2.0
 platforms: [linux]
@@ -60,6 +60,16 @@ to the session, C when it is the only path to the host.
 
 ## Procedure
 
+If you have the full repository, `install.sh` wraps the same sequence and is the
+preferred entry point. It prints the plan, installs, backs up, then runs
+`verify --deep` and stops on the first failed layer:
+
+```bash
+sudo ./install.sh --proxy "$PROXY" --exit-ip "$EXIT_IP" [--country "$CC"] [--allow "$CIDRS"]
+```
+
+With only the skill directory installed, drive the CLI directly:
+
 ```bash
 S=./skills/claude-egress-guard/scripts
 
@@ -97,6 +107,30 @@ What the operator should see when it is working:
 
 Do not "fix" a refusal by setting `STRICT_NET=0` unless the operator explicitly
 asks for that trade-off. Do not widen `ALLOW_IPS` to `0.0.0.0/0`.
+
+## Changing policy
+
+- **Rotating exit.** `sudo claude-egress-guard set-exit --ip NEW [--country CC]`
+  probes the proxy with the candidate address first, refuses if the proxy does
+  not serve it, rewrites the policy atomically (mode 0600) and re-runs `verify`.
+  Never hand-edit `EXPECTED_IP` from a number the operator guessed.
+- **Audit trail.** Set `LOG_REFUSALS=1` in `/etc/claude-egress-guard.conf`, then
+  read `journalctl -t claude-egress-guard`. Prefer this over asking the operator
+  "did it ever refuse?".
+- **Anything else** (allow list, jail on/off) is a B-tier edit followed by
+  `verify --deep`.
+
+## Out of scope
+
+State these plainly instead of implying coverage:
+
+- `npx @anthropic-ai/claude-code`, and any second Claude installation outside the
+  gated paths.
+- Containers whose traffic does not use the host's output path.
+- Root on the host: root can disable the gate, edit the policy or run the real
+  binary directly.
+- macOS, BSD, WSL, systemd older than 235.
+- SOCKS-only proxies: the client's proxy variables need an HTTP/mixed endpoint.
 
 ## Guardrails
 

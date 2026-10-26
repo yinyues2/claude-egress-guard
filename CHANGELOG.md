@@ -3,6 +3,39 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog; versions use semantic versioning.
 
+## [1.1.0] - 2026-10-27
+
+### Added
+
+- `install.sh`: one-command installer, usable from a checkout or piped from
+  `raw.githubusercontent.com`. Downloads a tag-pinned release when it is not run
+  from a checkout, prints the plan, backs up replaced files, then runs
+  `verify --deep`; `--skill-only`, `--uninstall`, `--dry-run`, `--yes`, `--ref`.
+- `claude-egress-guard set-exit --ip ADDR [--country CC]`: follows a rotating
+  residential exit. Probes the proxy with the candidate address, refuses if the
+  proxy does not serve it, rewrites the policy atomically (mode 0600) and
+  re-verifies.
+- `LOG_REFUSALS=1`: refusals are written to journald under the
+  `claude-egress-guard` tag, so "did it ever refuse?" is a query.
+- `AGENTS.md`, `llms.txt` and a `Makefile` (`make check`), so agent runners and
+  contributors have machine entry points.
+- README restructured around two audiences: agents installing the skill, and
+  humans running one command. Adds a real `verify --deep` sample, a compatibility
+  table, per-start cost, refusal logging, exit rotation and an explicit
+  "what it does not do" section (`npx`, second installs, containers, root,
+  SOCKS-only proxies).
+- Eleven new self-tests (42 total): set-exit accept/refuse/restore, refusal logging,
+  and the installer's `--help`, `--skill-only` and missing-argument behaviour.
+
+### Changed
+
+- The default allow list uses `127.0.0.0/8` instead of `127.0.0.1/32`, so
+  `systemd-resolved` on `127.0.0.53` keeps working inside the jail.
+- `verify --deep` no longer aborts on unset proxy variables when the config is
+  missing; it reports the failed layer.
+- The real binary is checked before the diagnostic passthrough, so a broken pin
+  reports the actual reason instead of a shell `command not found`.
+
 ## [1.0.0] - 2026-10-27
 
 ### Added

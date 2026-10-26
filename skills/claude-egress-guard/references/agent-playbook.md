@@ -57,6 +57,16 @@ Rules of thumb:
 
 ## 3. Install
 
+If you have the whole repository, `install.sh` is the shortest path (it fetches a
+tag-pinned release when run outside a checkout, then calls the CLI and
+`verify --deep`):
+
+```bash
+sudo ./install.sh --proxy "$PROXY" --exit-ip "$EXIT_IP" --country "$CC" --allow "$EXTRA_CIDRS"
+```
+
+Otherwise drive the CLI directly:
+
 ```bash
 sudo claude-egress-guard install \
   --proxy "$PROXY" \
@@ -135,10 +145,34 @@ package:     <claude --version output>
 | Event | Action |
 | --- | --- |
 | `npm i -g @anthropic-ai/claude-code` or built-in update | `verify --deep`; the gate self-heals `/usr/bin/claude` |
-| Proxy exit address changed | update `EXPECTED_IP`, run `verify` |
+| Proxy exit address changed | `set-exit --ip NEW [--country CC]`; it refuses an address the proxy does not serve |
 | Proxy moved to a remote relay | add the relay address to `ALLOW_IPS` |
 | Operator wants no kernel jail | `STRICT_NET=0`, then `verify` (expect a WARN) |
 | Suspected bypass | `claude-egress-guard status`, then list processes containing `claude` and check their cgroup: `cat /proc/<pid>/cgroup` should show a `run-r...scope` |
+
+## 8. Follow a rotating exit
+
+Residential exits change without warning. Never hand-edit `EXPECTED_IP` with a
+number the operator guessed:
+
+```bash
+sudo claude-egress-guard set-exit --ip "$NEW_IP" --country "$CC"
+```
+
+The command copies the policy to a temporary file with the candidate address,
+runs the checker against it, and only rewrites the real file when the proxy
+actually serves that address. It then re-runs `verify`. If it refuses, the exit
+did not move — check the proxy, not the policy.
+
+## 9. Turn on refusal logging
+
+```bash
+sudo sed -i 's/^LOG_REFUSALS=0/LOG_REFUSALS=1/' /etc/claude-egress-guard.conf
+sudo journalctl -t claude-egress-guard --since -24h
+```
+
+Report the count of refusals in the evidence record. A gate that refuses often
+is telling you the proxy is unstable, not that the gate is broken.
 
 ## Failure handling
 

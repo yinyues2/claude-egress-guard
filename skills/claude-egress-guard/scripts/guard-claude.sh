@@ -15,7 +15,17 @@ REFUSE=77
 
 refuse() {
 	printf 'claude-egress-guard: %s\n' "$*" >&2
+	log_refusal "$*"
 	exit "$REFUSE"
+}
+
+# Refusals are silent to anyone not watching the terminal. With LOG_REFUSALS=1
+# they also land in the journal, which is what turns "did it ever refuse?"
+# into a query instead of a guess.
+log_refusal() {
+	[ "${LOG_REFUSALS:-0}" = "1" ] || return 0
+	command -v logger >/dev/null 2>&1 || return 0
+	logger -t "$MARKER" -p daemon.warning -- "refused: $*" 2>/dev/null || true
 }
 
 [ -r "$CONF" ] || refuse "missing or unreadable $CONF - refusing to start"

@@ -21,11 +21,18 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y shellcheck
-          shellcheck -x -S warning skills/claude-egress-guard/scripts/*
+          shellcheck -x -S warning install.sh skills/claude-egress-guard/scripts/*
 
       - name: syntax
         run: |
+          bash -n install.sh
           for f in skills/claude-egress-guard/scripts/*; do bash -n "$f"; done
+
+      - name: installer surface
+        run: |
+          ./install.sh --help >/dev/null
+          ./install.sh --proxy http://127.0.0.1:1080 >/dev/null 2>&1 && exit 1 || true
+          make --version >/dev/null
 
       - name: self-test
         run: bash skills/claude-egress-guard/scripts/selftest.sh

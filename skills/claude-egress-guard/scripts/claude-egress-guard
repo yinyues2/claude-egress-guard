@@ -14,7 +14,7 @@
 # Everything it replaces is copied to the backup directory first.
 set -u
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 MARKER="claude-egress-guard"
 
 CONF_REL="/etc/claude-egress-guard.conf"
@@ -91,6 +91,7 @@ USAGE
   claude-egress-guard install --proxy URL --exit-ip ADDR [options]
   claude-egress-guard verify [--deep] [--prefix DIR]
   claude-egress-guard status [--prefix DIR]
+  claude-egress-guard set-exit --ip ADDR [--country CC] [--prefix DIR]
   claude-egress-guard drill --service UNIT [--prefix DIR]
   claude-egress-guard uninstall [--prefix DIR]
   claude-egress-guard show <guard|check|config>
@@ -111,6 +112,10 @@ INSTALL OPTIONS
 
 VERIFY OPTIONS
   --deep             also prove the jail blocks direct egress and allows the proxy
+
+SET-EXIT OPTIONS
+  --ip ADDR          new expected exit address; must match what the proxy reports now
+  --country CC       new country code (optional)
 
 DRILL OPTIONS
   --service UNIT     systemd unit of the proxy core (stopped and restarted)
@@ -281,6 +286,7 @@ cmd_install() {
 		printf 'REAL_BIN=%q\n' "$realdir/claude"
 		printf 'CHECK_BIN=%q\n' "$lib/egress-check.sh"
 		printf 'ALT_PATH=%q\n' "$alt_conf"
+		printf 'LOG_REFUSALS=0\n'
 		printf 'CHECK_TIMEOUT=6\n'
 		printf 'TRACE_URL="https://www.cloudflare.com/cdn-cgi/trace"\n'
 		printf 'FALLBACK_URL="https://ipinfo.io/json"\n'
@@ -424,9 +430,78 @@ cmd_status() {
 	say "real binary   : ${REAL_BIN:-unset}"
 	say "gate          : $(p "$BIN_REL")/claude"
 	say "alt path      : ${ALT_PATH:-none}"
+	say "refusal log   : ${LOG_REFUSALS:-0} (1 = journald, tag claude-egress-guard)"
 	if [ -x "${CHECK_BIN:-/nonexistent}" ]; then
 		say "egress        : $(CEG_CONF="$conf" "$CHECK_BIN" 2>&1 || true)"
 	fi
+}
+
+# ---------------------------------------------------------------------------
+# set-exit — follow a rotating proxy exit without hand-editing policy
+# ---------------------------------------------------------------------------
+cmd_set_exit() {
+	local ip="" country=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--ip) ip="${2:-}"; shift 2 ;;
+			--country) country="${2:-}"; shift 2 ;;
+			--prefix) PREFIX="${2:-}"; shift 2 ;;
+			-h | --help) usage; exit 0 ;;
+			*) die "unknown set-exit option: $1" ;;
+		esac
+	done
+	[ -n "$ip" ] || die "--ip is required"
+	valid_ipv4 "$ip" || die "--ip must be a valid IPv4 address"
+	case "$country" in
+		"" | [A-Za-z][A-Za-z]) ;;
+		*) die "--country must be a two-letter code" ;;
+	esac
+
+	local conf out tmp probe
+	conf=$(p "$CONF_REL")
+	[ -r "$conf" ] || die "config not found: $conf"
+	# shellcheck source=/dev/null
+	. "$conf"
+	[ -x "${CHECK_BIN:-/nonexistent}" ] || die "checker missing: ${CHECK_BIN:-unset}"
+
+	# The checker validates against the current policy, so probe with a temporary
+	# copy carrying the candidate address: set-exit follows a rotating exit, it
+	# does not whitelist an address nobody has verified.
+	probe=$(mktemp "${TMPDIR:-/tmp}/ceg-probe.XXXXXX") || die "cannot create a probe file"
+	awk -v ip="$ip" -v cc="$country" '
+		/^EXPECTED_IP=/ { print "EXPECTED_IP=\"" ip "\""; next }
+		/^EXPECTED_COUNTRY=/ && cc != "" { print "EXPECTED_COUNTRY=\"" cc "\""; next }
+		{ print }
+	' "$conf" >"$probe" || {
+		rm -f "$probe"
+		die "cannot prepare the probe"
+	}
+	if ! out=$(CEG_CONF="$probe" "$CHECK_BIN" 2>&1); then
+		rm -f "$probe"
+		die "proxy does not serve $ip right now: $out"
+	fi
+	rm -f "$probe"
+	say "probe: $out"
+
+	tmp="$conf.tmp"
+	awk -v ip="$ip" -v cc="$country" '
+		BEGIN { ipseen = 0; ccseen = 0 }
+		/^EXPECTED_IP=/ { print "EXPECTED_IP=\"" ip "\""; ipseen = 1; next }
+		/^EXPECTED_COUNTRY=/ {
+			ccseen = 1
+			if (cc != "") { print "EXPECTED_COUNTRY=\"" cc "\""; next }
+		}
+		{ print }
+		END {
+			if (!ipseen) print "EXPECTED_IP=\"" ip "\""
+			if (cc != "" && !ccseen) print "EXPECTED_COUNTRY=\"" cc "\""
+		}
+	' "$conf" >"$tmp" || die "cannot rewrite $conf"
+	chmod 600 "$tmp"
+	mv -f -- "$tmp" "$conf"
+
+	say "policy updated: EXPECTED_IP=$ip${country:+ EXPECTED_COUNTRY=$country}"
+	cmd_verify
 }
 
 # ---------------------------------------------------------------------------
@@ -560,6 +635,7 @@ case "$cmd" in
 	install) cmd_install "$@" ;;
 	verify) cmd_verify "$@" ;;
 	status) cmd_status "$@" ;;
+	set-exit) cmd_set_exit "$@" ;;
 	drill) cmd_drill "$@" ;;
 	uninstall) cmd_uninstall "$@" ;;
 	show) cmd_show "$@" ;;

@@ -2,183 +2,331 @@
 
 [![ci](https://github.com/yinyues2/claude-egress-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/yinyues2/claude-egress-guard/actions/workflows/ci.yml)
 
-**A fail-closed egress gate for Claude Code on Linux hosts — packaged as an agent skill.**
+**A deployment skill for agents, plus a one-command installer for humans, that
+pins Claude Code on a Linux host to one egress and refuses to start when that
+path is unavailable.**
 
-Claude Code on a VPS is easy to set up and easy to leak. A shell alias or a
+Claude Code on a VPS is easy to install and easy to leak. A shell alias or a
 `claude()` function only covers interactive shells: Python, `sh -c`, cron,
-systemd units and anything calling `/usr/bin/claude` walk straight past it, and
-a proxy that dies mid-session silently turns into a direct connection from the
+systemd units and anything calling `/usr/bin/claude` walk straight past it, and a
+proxy that dies mid-session silently turns into a direct connection from the
 datacenter IP.
 
-This project pins every Claude Code invocation to one proxy and one expected
-exit address, refuses to start when that path is not available, and optionally
-jails the whole process tree at the kernel level so child processes cannot
-reach the public internet even if they ignore proxy variables.
+This project closes that gap at the binary level: the `claude` command itself
+becomes a gate that verifies the proxy's real exit address, injects the proxy
+environment, and optionally jails the whole process tree with a kernel IP allow
+list. Anything unexpected refuses to start. There is no fallback.
+
+---
+
+## For agents — start here
+
+This repository is written to be consumed by an agent (Hermes, Codex, Claude
+Code, or any skill-capable runner), not only by a human reading a README.
+
+```bash
+# give the agent the skill (no root, no changes to the host)
+curl -fsSL https://raw.githubusercontent.com/yinyues2/claude-egress-guard/main/install.sh \
+  | bash -s -- --skill-only --dest ~/.hermes/skills
+```
+
+Then say:
+
+> Use the `claude-egress-guard` skill. Interview me for the proxy endpoint, the
+> expected exit address, the country and any extra CIDRs; then install, run
+> `verify --deep`, drill the failure path and report the PASS/FAIL lines.
+
+What the agent is told, in [`skills/claude-egress-guard/SKILL.md`](skills/claude-egress-guard/SKILL.md):
+
+- **Four facts only** — proxy endpoint, expected exit address, country, allow
+  list. Everything else is read from the host instead of asked again.
+- **Three authorization tiers** — read-only diagnosis is free; one approval
+  covers the plan (install/verify/drill/uninstall); anything that can cut the
+  operator's own access is confirmed on the spot.
+- **Evidence, not adjectives** — quote the PASS line for every claim, record the
+  drill result, never report a layer as working without its output.
+- **Hard stops** — never stop ssh/tailscale/docker units, never widen
+  `ALLOW_IPS` to `0.0.0.0/0`, never disable a layer to make a check pass, never
+  touch account, payment or identity work.
+
+Supporting files: [`AGENTS.md`](AGENTS.md) (machine entry point),
+[`references/agent-playbook.md`](skills/claude-egress-guard/references/agent-playbook.md)
+(step-by-step with decision points), [`llms.txt`](llms.txt) (link index for
+LLM tooling), [`references/troubleshooting.md`](skills/claude-egress-guard/references/troubleshooting.md).
+
+---
+
+## One-command install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yinyues2/claude-egress-guard/main/install.sh \
+  | sudo bash -s -- --proxy http://127.0.0.1:1080 --exit-ip 203.0.113.10 --country JP
+```
+
+That command downloads the pinned release, prints the plan, installs the gate,
+backs up whatever it replaces, and finishes with `verify --deep`. If any layer
+fails it stops and names the layer; it never reports success for a gate that is
+not working.
+
+| Flag | Meaning |
+| --- | --- |
+| `--proxy URL` | local HTTP/mixed proxy the client must use (required) |
+| `--exit-ip ADDR` | public IPv4 the proxy must exit from (required) |
+| `--country CC` | two-letter country to enforce (optional) |
+| `--allow LIST` | extra CIDRs reachable inside the jail, comma separated |
+| `--strict-net on\|off` | kernel jail for the process tree (default `on`) |
+| `--dry-run` | print the plan, write nothing |
+| `--yes` | skip the confirmation prompt (for automation) |
+| `--ref REF` | release tag or branch to download (default: pinned tag) |
+| `--uninstall` | remove the gate and restore the previous binaries |
+| `--skill-only` | copy just the skill into a skills directory |
+
+`203.0.113.10` is documentation address space (RFC 5737); replace it with the
+address your proxy actually reports. Loopback and the host's IPv4 DNS resolvers
+are allow-listed automatically; add `--allow` for a remote proxy upstream, a
+tailnet range, or an internal API.
+
+**Read before you pipe to root.** `install.sh` is a plain shell script with no
+obfuscation, and it downloads a tag-pinned tarball rather than a moving branch.
+Read it, or clone the repository and run `sudo ./install.sh ...`.
+
+Uninstall, same channel:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yinyues2/claude-egress-guard/main/install.sh \
+  | sudo bash -s -- --uninstall
+```
+
+---
+
+## What you get
 
 ```
-claude  (any entry point)
-  └─ /usr/local/bin/claude           gate: egress check -> proxy env -> jail
-       ├─ /usr/bin/claude            same gate (npm updates rewrite this; the gate self-heals)
+$ sudo claude-egress-guard verify --deep
+PASS   config present: /etc/claude-egress-guard.conf
+PASS   real binary executable
+PASS   gate installed: /usr/local/bin/claude
+PASS   gate mirrored: /usr/bin/claude
+PASS   egress check: ok exit=203.0.113.10 country=JP
+PASS   kernel jail enabled, allow list: 127.0.0.0/8 ::1/128 192.0.2.53/32
+PASS   systemd-run available
+PASS   IPv6 disabled system-wide
+PASS   jail blocks direct egress
+PASS   jail still allows the proxy path
+---- 0 check(s) failed
+```
+
+Every line is an observation rather than a configuration claim: the last two
+issue real requests from inside the jail.
+
+```
+claude  (any entry point: shell, Python, cron, systemd, absolute path)
+  └─ /usr/local/bin/claude           gate: exit check -> proxy env -> jail
+       ├─ /usr/bin/claude            same gate (npm updates rewrite this; it self-heals)
        └─ /opt/claude-real/claude    real binary (symlink, follows package updates)
             └─ your proxy            127.0.0.1:1080 -> expected exit address
 ```
+
+Order of operations on every start:
+
+1. Load `/etc/claude-egress-guard.conf`; missing or unreadable = refuse (77).
+2. Restore `/usr/bin/claude` if a package update replaced it with a symlink.
+3. Ask the proxy for its exit address and country; mismatch, timeout or HTTP
+   error = refuse (77), with no retry and no direct fallback.
+4. Export `ALL_PROXY`/`http_proxy`/`https_proxy` (and the lowercase forms) to the
+   client and every child, with `NO_PROXY` limited to loopback.
+5. If `STRICT_NET=1`, exec inside a transient systemd scope with
+   `IPAddressDeny=any` and `IPAddressAllow=<allow list>`, so children inherit a
+   kernel-level allow list instead of a promise.
+
+Diagnostics never touch the network: `--version`, `--help` and `--ceg-check`
+short-circuit before the probe.
+
+---
 
 ## What it guarantees
 
 | Layer | Behaviour |
 | --- | --- |
-| Exit check | Before every start, the proxy is asked for its public address and country. Mismatch, timeout or HTTP error = **refuse to start** (exit 77). |
-| Proxy environment | `ALL_PROXY`, `http_proxy`, `https_proxy` (upper and lower case) exported to the client and every child. |
-| Kernel jail (optional, default on) | The Claude process tree runs in a transient systemd scope with `IPAddressDeny=any`; only loopback, the allow-listed networks (your proxy upstream, DNS resolvers, tailnet) stay reachable. |
-| Self-heal | Package self-updates rewrite `/usr/bin/claude` back into a symlink; the gate restores itself on the next invocation. |
-| Fail-closed | Missing config, missing checker, unreachable proxy, wrong exit, wrong country, unavailable `systemd-run`: all refuse. There is no "continue anyway" path. |
+| Exit check | Address and country verified before every start; any mismatch, timeout or error refuses with exit 77 |
+| Proxy environment | All six proxy variables exported to the client and every descendant |
+| Kernel jail | `IPAddressDeny=any` for the whole process tree; only loopback, the allow list and explicitly allowed CIDRs stay reachable |
+| Entry-point coverage | `/usr/local/bin/claude` and `/usr/bin/claude` are both the gate; the real binary lives under `/opt/claude-real` |
+| Self-heal | Package self-updates that rewrite `/usr/bin/claude` are repaired on the next invocation |
+| Fail-closed | Missing config, missing checker, proxy down, wrong exit, wrong country, no `systemd-run`, not root with `STRICT_NET=1`: all refuse |
+| Audit trail | With `LOG_REFUSALS=1`, every refusal goes to journald under the `claude-egress-guard` tag |
+| Reversibility | Every replaced file is backed up under `/var/lib/claude-egress-guard/backup/<timestamp>/`; `uninstall` restores it |
+
+---
+
+## Requirements and compatibility
+
+| Item | Requirement |
+| --- | --- |
+| OS | Linux with systemd 235+ (needed for `IPAddressDeny=`) |
+| Shell | bash 4.3+ |
+| Tools | `curl`, `install`, `readlink`, `mktemp`, `awk`, `sed` |
+| Privileges | root for a real install; `--prefix` for an unprivileged sandbox |
+| Claude Code | already installed, npm-global or native installer |
+| Proxy | local HTTP or mixed endpoint (SOCKS-only is not usable through the client's proxy variables) |
+
+Verified against: Debian 13 / systemd 257 / Claude Code 2.1.296 (npm-global),
+with a residential HTTP proxy on loopback. CI runs the suite on Ubuntu 24.04.
+
+Not verified, not supported: macOS and BSD, WSL, systemd older than 235, rootless
+user scopes with `STRICT_NET=1`, Claude running inside containers.
+
+**Cost per start:** one HTTPS round trip through the proxy (roughly 100-400 ms
+depending on distance). `--version` and `--help` skip it.
+
+---
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `claude-egress-guard install ...` | plan, back up, install, print the next step (`--dry-run` supported) |
+| `claude-egress-guard verify` | static checks + live exit check |
+| `claude-egress-guard verify --deep` | adds proof that the jail blocks direct egress and still allows the proxy |
+| `claude-egress-guard status` | current policy with proxy credentials masked |
+| `claude-egress-guard set-exit --ip ADDR [--country CC]` | follow a rotating exit: probe first, rewrite policy only if the proxy serves that address, then re-verify |
+| `claude-egress-guard drill --service UNIT` | stop the proxy unit, prove the gate refuses, restart, wait for recovery |
+| `claude-egress-guard show <guard\|check\|config>` | print the installed gate, checker or policy for audit |
+| `claude-egress-guard uninstall` | restore the newest backup and remove the gate |
+
+Exit codes: `0` success, `1` verification failed, `2` usage error, `77` the gate
+refused to start.
+
+---
+
+## Rotating or changing the exit
+
+Residential exits move. Do not hand-edit the config; ask the gate to follow:
+
+```bash
+sudo claude-egress-guard set-exit --ip 198.51.100.23 --country JP
+```
+
+It probes the proxy with the candidate address first, refuses if the proxy does
+not serve it, rewrites `EXPECTED_IP`/`EXPECTED_COUNTRY` atomically with mode
+0600, then runs `verify`.
+
+If the exit moved and you do not know the new address:
+
+```bash
+curl -4 -fsS --max-time 8 -x http://127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace
+```
+
+Take `ip=` and `loc=` from that output.
+
+---
+
+## Refusal logging
+
+Refusals are otherwise visible only to whoever is watching the terminal. Turn on
+journald logging once:
+
+```bash
+sudo sed -i 's/^LOG_REFUSALS=0/LOG_REFUSALS=1/' /etc/claude-egress-guard.conf
+```
+
+Then:
+
+```bash
+journalctl -t claude-egress-guard --since -24h
+```
+
+Each entry is `refused: <reason>`. This is the difference between "I think it
+never refused" and "here are the eleven times it did".
+
+---
+
+## Everyday operations
+
+| Event | Action |
+| --- | --- |
+| `npm i -g` or Claude Code self-update | `sudo claude-egress-guard verify --deep` (the alt path is repaired automatically) |
+| Proxy exit changed | `sudo claude-egress-guard set-exit --ip NEW --country CC` |
+| Proxy moved to a remote relay | add the relay address with `--allow`, then `verify --deep` |
+| Want no kernel jail | set `STRICT_NET=0`, then `verify` (expect a WARN); process-tree egress is no longer enforced |
+| Suspect a bypass | `status`, then inspect `/proc/<pid>/cgroup` for a `run-r...scope` |
+
+---
 
 ## What it does not do
 
-- It does not create, configure or monitor the proxy itself. You supply an
-  HTTP/mixed endpoint that already exits where you want.
-- It is not a VPN and does not hide traffic from the host's other services.
-  It gates Claude Code only.
-- It cannot make an account safe, cannot prevent provider-side risk checks, and
-  does not help with anything that violates a provider's terms. Account
-  registration, payment and identity verification stay with the account owner.
-- It does not rotate IPs, retry, or fall back to a direct connection.
+- **It does not create or manage the proxy.** You supply an endpoint that
+  already exits where you want, and you keep it alive.
+- **It gates one binary.** `npx @anthropic-ai/claude-code` runs the package
+  without touching `/usr/local/bin/claude` and is therefore not gated; remove
+  that habit or wrap it yourself. A second Claude installation in another prefix
+  is also ungated until you gate or remove it.
+- **It is not a VPN.** Host services, package managers and other users are
+  unaffected; the jail applies only to the Claude process tree.
+- **It cannot stop root.** Anyone with root can set `STRICT_NET=0`, edit the
+  config or run `/opt/claude-real/claude` directly. This is a guard rail, not a
+  mandatory access control boundary.
+- **It does not cover containers.** Docker and Kubernetes traffic does not pass
+  through the host's output path.
+- **It does not make an account safe.** Registration, payment, identity checks
+  and provider decisions stay with the account owner; nothing here is meant to
+  evade a provider's terms.
 
-## Requirements
+More detail, including the full threat model: [SECURITY.md](SECURITY.md).
 
-- Linux with systemd 235+ (Debian 12/13, Ubuntu 22.04/24.04 tested patterns)
-- `bash` 4.3+, `curl`, `install`, `readlink`
-- root for a real install (`--prefix` allows a sandboxed install for tests)
-- Claude Code already installed (npm-global or native installer)
+---
 
-## Quick start
+## Manual install from a checkout
 
 ```bash
 git clone https://github.com/yinyues2/claude-egress-guard.git
-cd claude-egress-guard/skills/claude-egress-guard/scripts
+cd claude-egress-guard
 
-# 1) show the plan first
-sudo ./claude-egress-guard install \
-  --proxy http://127.0.0.1:1080 \
-  --exit-ip 203.0.113.10 \
-  --country JP \
-  --dry-run
+# one command, same flags as the curl form
+sudo ./install.sh --proxy http://127.0.0.1:1080 --exit-ip 203.0.113.10 --country JP
 
-# 2) install (backs up anything it replaces)
-sudo ./claude-egress-guard install \
-  --proxy http://127.0.0.1:1080 \
-  --exit-ip 203.0.113.10 \
-  --country JP
-
-# 3) verify, including a live jail test
-sudo claude-egress-guard verify --deep
+# or drive the CLI directly
+sudo skills/claude-egress-guard/scripts/claude-egress-guard install \
+  --proxy http://127.0.0.1:1080 --exit-ip 203.0.113.10 --country JP --dry-run
 ```
 
-`203.0.113.10` is documentation address space (RFC 5737); replace it with the
-address your proxy actually reports.
-
-If your proxy upstream or a private network has to stay reachable inside the
-jail, add it explicitly:
-
-```bash
-sudo claude-egress-guard install ... --allow 100.64.0.0/10,192.0.2.0/24
-```
-
-Loopback and the host's IPv4 DNS resolvers are added automatically.
-
-## Verify and drill
-
-```bash
-sudo claude-egress-guard verify          # static checks + live egress check
-sudo claude-egress-guard verify --deep   # also proves the jail blocks direct egress
-sudo claude-egress-guard status          # current policy, proxy credentials masked
-sudo claude-egress-guard drill --service my-proxy.service
-```
-
-`drill` stops the proxy unit, proves the gate refuses to start, restarts the
-unit and waits for recovery. It refuses to touch units whose name suggests SSH,
-Tailscale or Docker, and restarts the unit on exit even if it fails midway.
-
-Exit codes: `0` success, `1` verification failed, `2` usage, `77` gate refused.
-
-## After a package update
-
-Claude Code's self-update replaces the package files and re-creates the
-`/usr/bin/claude` symlink. The gate detects that and reinstalls itself on the
-next PATH invocation. After any manual `npm i -g`, run:
-
-```bash
-sudo claude-egress-guard verify --deep
-```
-
-## Changing the expected exit
-
-Edit `/etc/claude-egress-guard.conf` (`EXPECTED_IP`, `EXPECTED_COUNTRY`,
-`ALLOW_IPS`, `STRICT_NET`) and run `verify`. The file is mode 0600 and is the
-only place policy lives.
-
-To keep the egress check but drop the kernel jail:
-
-```bash
-sudo sed -i 's/^STRICT_NET=1/STRICT_NET=0/' /etc/claude-egress-guard.conf
-```
-
-## Uninstall
-
-```bash
-sudo claude-egress-guard uninstall
-```
-
-Restores the files replaced during install from
-`/var/lib/claude-egress-guard/backup/<timestamp>/` and removes the gate. Backups
-are kept so a mistake is recoverable.
-
-## Use it as an agent skill
-
-`skills/claude-egress-guard/SKILL.md` is written for an agent (Hermes, Codex or
-any skill-capable runner) and tells it how to interview the operator, install,
-verify, drill and record evidence without touching anything it does not own.
-The reference files hold the decision points, the authorization tiers and the
-troubleshooting table.
-
-Copy `skills/claude-egress-guard/` into your skills directory, for example:
-
-```bash
-cp -R skills/claude-egress-guard ~/.hermes/skills/       # Hermes
-cp -R skills/claude-egress-guard ~/.codex/skills/       # Codex
-```
-
-## Repository layout
-
-```
-skills/claude-egress-guard/
-  SKILL.md                    agent instructions
-  references/                 playbook, troubleshooting
-  scripts/claude-egress-guard installer / verifier / drill
-  scripts/guard-claude.sh     the gate itself (installed as `claude`)
-  scripts/egress-check.sh     exit checker (also runnable standalone)
-  scripts/selftest.sh         sandboxed test suite (no root, no network)
-  templates/                  example configuration
-tools/leak-scan.py            blocks accidental secrets/PII before commit
-```
+---
 
 ## Development
 
 ```bash
-bash skills/claude-egress-guard/scripts/selftest.sh
-shellcheck -x -S warning skills/claude-egress-guard/scripts/*
-python3 tools/leak-scan.py
+make check        # shellcheck + 42 self-tests + leak scan
+make test         # sandboxed suite only (no root, no network)
+make lint
+make scan
 ```
 
-CI runs the same checks on every push.
+The suite installs into a throwaway prefix with fake `curl`, `id`, `logger` and
+`systemd-run`, so it neither needs root nor touches the host.
 
-## License
+---
 
-Apache-2.0. See [LICENSE](LICENSE).
+## Repository layout
 
-## Security and privacy
+```
+install.sh                  one-command installer (tag-pinned download)
+AGENTS.md                   machine entry point for agent runners
+llms.txt                    link index for LLM tooling
+skills/claude-egress-guard/
+  SKILL.md                  the deployment skill
+  references/               playbook and troubleshooting
+  scripts/claude-egress-guard   installer/verifier/drill/uninstall CLI
+  scripts/guard-claude.sh   the gate (installed as `claude`)
+  scripts/egress-check.sh   exit checker (standalone runnable)
+  scripts/selftest.sh       42 sandboxed assertions
+  templates/                example policy file
+tools/leak-scan.py          blocks credentials, PII and non-documentation IPs
+```
 
-Read [SECURITY.md](SECURITY.md) for the threat model and reporting process, and
-[PRIVACY.md](PRIVACY.md) for what this project does and does not collect (short
-version: nothing — no telemetry, no analytics, no network calls except your own
-proxy probe).
+---
+
+## License, security, privacy
+
+Apache-2.0 — see [LICENSE](LICENSE). Security model and reporting:
+[SECURITY.md](SECURITY.md). Data collection: [PRIVACY.md](PRIVACY.md) — short
+version: none, no telemetry, no network calls other than your own proxy probe.

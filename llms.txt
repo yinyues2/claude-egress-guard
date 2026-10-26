@@ -1,0 +1,28 @@
+# claude-egress-guard
+
+> A deployment skill for agents, plus a one-command installer, that pins Claude
+> Code on a Linux host to one verified egress and refuses to start otherwise.
+
+## Docs
+
+- [Skill](https://github.com/yinyues2/claude-egress-guard/blob/main/skills/claude-egress-guard/SKILL.md): deployment contract — four facts, three authorization tiers, install/verify/drill, guardrails
+- [Agent playbook](https://github.com/yinyues2/claude-egress-guard/blob/main/skills/claude-egress-guard/references/agent-playbook.md): step-by-step commands, allow-list rules, evidence record
+- [Troubleshooting](https://github.com/yinyues2/claude-egress-guard/blob/main/skills/claude-egress-guard/references/troubleshooting.md): symptom → cause → fix
+- [AGENTS.md](https://github.com/yinyues2/claude-egress-guard/blob/main/AGENTS.md): machine entry point
+- [README](https://github.com/yinyues2/claude-egress-guard/blob/main/README.md): overview, one-command install, compatibility, limitations
+- [SECURITY.md](https://github.com/yinyues2/claude-egress-guard/blob/main/SECURITY.md): threat model and scope
+- [PRIVACY.md](https://github.com/yinyues2/claude-egress-guard/blob/main/PRIVACY.md): no telemetry, no data collection
+
+## Install
+
+- Skill only: `curl -fsSL https://raw.githubusercontent.com/yinyues2/claude-egress-guard/main/install.sh | bash -s -- --skill-only --dest ~/.hermes/skills`
+- Full install: `curl -fsSL https://raw.githubusercontent.com/yinyues2/claude-egress-guard/main/install.sh | sudo bash -s -- --proxy URL --exit-ip ADDR [--country CC]`
+- Verify: `sudo claude-egress-guard verify --deep`
+
+## Facts
+
+- Requires Linux with systemd 235+, bash 4.3+, root for a real install.
+- Gated paths: `/usr/local/bin/claude` and `/usr/bin/claude`; real binary at `/opt/claude-real/claude`.
+- Exit codes: 0 ok, 1 verification failed, 2 usage, 77 refused.
+- Not covered: `npx` invocations, other installs, containers, root.
+- License: Apache-2.0.

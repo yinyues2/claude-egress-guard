@@ -15,6 +15,12 @@
 | `drill` says the gate recovered but Claude still fails | The client, not the gate, is broken (auth, quota, version) | Run `claude --version` and `claude auth status` outside the gate scope to compare |
 | `npm i -g` re-created the symlink and you want certainty | Self-heal is best-effort on the next invocation | `sudo claude-egress-guard verify --deep` after every manual upgrade |
 | Two Claude installations (`npm-global` and native) | The gate pins one real binary; the other stays callable by absolute path | Remove the unused install, or add a second gate for it and verify both |
+| `npx @anthropic-ai/claude-code` works and still leaves from the host address | `npx` runs the package directly, never `/usr/local/bin/claude` | Stop using `npx` on that host, or wrap it with its own egress check |
+| A proxy in `~/.claude/settings.json` seems to win | Client settings are applied after the gate exports its variables | Remove the proxy from the client settings; the gate owns egress |
+| Claude in Docker/Kubernetes is not gated | Container traffic does not use the host's output path | Run Claude on the host, or gate inside the container |
+| `set-exit` refuses with `proxy does not serve ...` | The proxy is not exiting from that address right now | Check the proxy; never force the value into the config by hand |
+| `journalctl -t claude-egress-guard` is empty | `LOG_REFUSALS=0`, or nothing has been refused | Set it to 1; entries only appear when a refusal happens |
+| `install.sh` says `no terminal for confirmation` | Piped stdin cannot answer the prompt | Re-run with `--yes` |
 
 ## Reading `verify` output
 

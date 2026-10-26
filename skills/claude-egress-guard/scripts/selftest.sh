@@ -162,6 +162,33 @@ grep -q 'IPAddressDeny=any' "$WORK/systemd.log" && ok "jail denies by default" |
 grep -q 'IPAddressAllow=.*127.0.0.0/8' "$WORK/systemd.log" && ok "jail allow list forwarded" || no "IPAddressAllow malformed"
 
 # ---------------------------------------------------------------------------
+printf 'set-exit / refusal logging\n'
+# ---------------------------------------------------------------------------
+FAKE_IP=198.51.100.9 "$CLI" set-exit --prefix "$PREFIX" --ip 198.51.100.9 >/dev/null 2>&1
+expect_rc "set-exit accepts an address the proxy serves" 0 $?
+grep -q 'EXPECTED_IP="198.51.100.9"' "$CONF" && ok "policy rewritten" || no "policy not rewritten"
+
+FAKE_IP=203.0.113.10 "$CLI" set-exit --prefix "$PREFIX" --ip 192.0.2.77 >/dev/null 2>&1
+expect_rc "set-exit refuses an address the proxy does not serve" 1 $?
+grep -q 'EXPECTED_IP="198.51.100.9"' "$CONF" && ok "policy untouched after a refusal" || no "policy changed on a failed set-exit"
+
+FAKE_IP=203.0.113.10 "$CLI" set-exit --prefix "$PREFIX" --ip 203.0.113.10 >/dev/null 2>&1
+expect_rc "set-exit returns to the original exit" 0 $?
+
+cat >"$BIN/logger" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"${FAKE_LOGGER_LOG:-/dev/null}"
+EOF
+chmod 0755 "$BIN/logger"
+
+sed -i 's/^LOG_REFUSALS=0/LOG_REFUSALS=1/' "$CONF"
+: >"$WORK/logger.log"
+FAKE_IP=198.51.100.7 FAKE_LOGGER_LOG="$WORK/logger.log" run_gate --print-config >/dev/null 2>&1
+expect_rc "refusal still exits 77 with logging on" 77 $?
+grep -q 'refused:' "$WORK/logger.log" && ok "refusal written to the journald target" || no "refusal not logged"
+sed -i 's/^LOG_REFUSALS=1/LOG_REFUSALS=0/' "$CONF"
+
+# ---------------------------------------------------------------------------
 printf 'verify / status / uninstall\n'
 # ---------------------------------------------------------------------------
 FAKE_IP=203.0.113.10 "$CLI" verify --prefix "$PREFIX" >/dev/null 2>&1
@@ -178,6 +205,22 @@ expect_rc "uninstall exits 0" 0 $?
 [ -L "$PREFIX/usr/bin/claude" ] && ok "original alt symlink restored" || no "alt symlink not restored"
 [ ! -e "$CONF" ] && ok "config removed" || no "config left behind"
 [ ! -e "$PREFIX/usr/local/bin/claude" ] && ok "gate removed" || no "gate left behind"
+
+# ---------------------------------------------------------------------------
+printf 'installer\n'
+# ---------------------------------------------------------------------------
+ROOT=$(CDPATH='' cd -- "$HERE/../../.." && pwd -P)
+if [ -f "$ROOT/install.sh" ]; then
+	"$ROOT/install.sh" --help >/dev/null 2>&1
+	expect_rc "install.sh --help" 0 $?
+	"$ROOT/install.sh" --skill-only --dest "$WORK/skills" >/dev/null 2>&1
+	expect_rc "install.sh --skill-only" 0 $?
+	[ -f "$WORK/skills/claude-egress-guard/SKILL.md" ] && ok "skill copied to the target directory" || no "skill not copied"
+	"$ROOT/install.sh" --proxy http://127.0.0.1:1080 >/dev/null 2>&1
+	expect_rc "install.sh refuses a missing --exit-ip" 1 $?
+else
+	printf '  skip install.sh (not a checkout)\n'
+fi
 
 printf '\n%d passed, %d failed\n' "$PASSED" "$FAILED"
 [ "$FAILED" -eq 0 ]
