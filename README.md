@@ -1,5 +1,7 @@
 # claude-egress-guard
 
+[![ci](https://github.com/yinyues2/claude-egress-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/yinyues2/claude-egress-guard/actions/workflows/ci.yml)
+
 **A fail-closed egress gate for Claude Code on Linux hosts — packaged as an agent skill.**
 
 Claude Code on a VPS is easy to set up and easy to leak. A shell alias or a
