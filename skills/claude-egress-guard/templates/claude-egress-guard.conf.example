@@ -1,0 +1,43 @@
+# claude-egress-guard configuration example
+#
+# Installed to /etc/claude-egress-guard.conf with mode 0600 by
+# `claude-egress-guard install`. Every value below is plain shell assignment;
+# the file is sourced by the gate and the checker.
+#
+# Changing policy here is an operator decision: edit, then run
+# `claude-egress-guard verify --deep`.
+
+# Local HTTP/mixed proxy the client must use.
+PROXY="http://127.0.0.1:1080"
+
+# Public IPv4 address the proxy must exit from (required).
+EXPECTED_IP="203.0.113.10"
+
+# Two-letter country the exit must report. Empty = not enforced.
+EXPECTED_COUNTRY=""
+
+# Kernel jail for the whole Claude process tree: 1 = on, 0 = off.
+STRICT_NET=1
+
+# CIDRs reachable inside the jail. Always keep loopback; add the proxy upstream,
+# the host's DNS resolvers and any private network the work depends on.
+ALLOW_IPS="127.0.0.0/8 ::1/128 192.0.2.53/32"
+
+# Real Claude binary, pinned through a stable symlink so package updates are
+# followed without re-installing the gate.
+REAL_BIN="/opt/claude-real/claude"
+
+# Exit checker used by the gate.
+CHECK_BIN="/usr/local/lib/claude-egress-guard/egress-check.sh"
+
+# Mirror path: the gate repairs this file if a package update replaces it.
+ALT_PATH="/usr/bin/claude"
+
+# Seconds allowed for each probe.
+CHECK_TIMEOUT=6
+
+# Endpoints used by the checker, through the proxy only. The first one is a
+# Cloudflare edge trace (no request reaches an AI provider); the second is a
+# JSON fallback.
+TRACE_URL="https://www.cloudflare.com/cdn-cgi/trace"
+FALLBACK_URL="https://ipinfo.io/json"

@@ -1,0 +1,569 @@
+#!/usr/bin/env bash
+# claude-egress-guard — install, verify and drill a fail-closed egress gate for
+# Claude Code on a Linux host.
+#
+# This program writes only these locations (all rooted at --prefix, default "/"):
+#   <prefix>/etc/claude-egress-guard.conf
+#   <prefix>/usr/local/lib/claude-egress-guard/{guard-claude.sh,egress-check.sh}
+#   <prefix>/usr/local/bin/claude
+#   <prefix>/usr/bin/claude              (unless --no-alt)
+#   <prefix>/usr/local/sbin/claude-egress-guard
+#   <prefix>/opt/claude-real/claude      (symlink to the real package binary)
+#   <prefix>/var/lib/claude-egress-guard/backup/<timestamp>/...
+#
+# Everything it replaces is copied to the backup directory first.
+set -u
+
+VERSION="1.0.0"
+MARKER="claude-egress-guard"
+
+CONF_REL="/etc/claude-egress-guard.conf"
+LIB_REL="/usr/local/lib/claude-egress-guard"
+BIN_REL="/usr/local/bin"
+SBIN_REL="/usr/local/sbin"
+REAL_REL="/opt/claude-real"
+STATE_REL="/var/lib/claude-egress-guard"
+
+PREFIX=""
+SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+say() { printf '%s\n' "$*"; }
+err() { printf 'error: %s\n' "$*" >&2; }
+die() {
+	err "$*"
+	exit 1
+}
+warn() { printf 'WARN   %s\n' "$*"; }
+pass() { printf 'PASS   %s\n' "$*"; }
+fail() {
+	printf 'FAIL   %s\n' "$*"
+	FAILED=$((FAILED + 1))
+}
+
+p() { printf '%s%s' "$PREFIX" "$1"; }
+
+in_sandbox() { [ -n "$PREFIX" ]; }
+
+need_root() {
+	if ! in_sandbox && [ "$(id -u)" -ne 0 ]; then
+		die "must run as root (or use --prefix for a sandboxed install)"
+	fi
+}
+
+source_file() {
+	# Locate a shipped script next to this one, or in the installed lib dir.
+	local name="$1" dir
+	for dir in "$SELF_DIR" "$(p "$LIB_REL")"; do
+		if [ -r "$dir/$name" ]; then
+			printf '%s\n' "$dir/$name"
+			return 0
+		fi
+	done
+	return 1
+}
+
+is_gate() {
+	head -c 200 -- "$1" 2>/dev/null | grep -q -- "$MARKER"
+}
+
+valid_ipv4() {
+	local ip="$1" o
+	case "$ip" in
+		*[!0-9.]* | .* | *. | *..*) return 1 ;;
+	esac
+	[ "$(printf '%s' "$ip" | awk -F. '{print NF}')" = "4" ] || return 1
+	IFS=.
+	for o in $ip; do
+		[ "$o" -ge 0 ] 2>/dev/null && [ "$o" -le 255 ] 2>/dev/null || return 1
+	done
+	unset IFS
+	return 0
+}
+
+usage() {
+	cat <<'EOF'
+claude-egress-guard - fail-closed egress gate for Claude Code (Linux)
+
+USAGE
+  claude-egress-guard install --proxy URL --exit-ip ADDR [options]
+  claude-egress-guard verify [--deep] [--prefix DIR]
+  claude-egress-guard status [--prefix DIR]
+  claude-egress-guard drill --service UNIT [--prefix DIR]
+  claude-egress-guard uninstall [--prefix DIR]
+  claude-egress-guard show <guard|check|config>
+  claude-egress-guard version
+
+INSTALL OPTIONS
+  --proxy URL        local HTTP/mixed proxy the client must use (required)
+                     e.g. http://127.0.0.1:1080
+  --exit-ip ADDR     public IPv4 the proxy must exit from (required)
+  --country CC       two-letter country the exit must report (optional)
+  --allow LIST       extra CIDR(s) reachable inside the jail, comma separated;
+                     loopback and the host resolver are always added
+  --strict-net MODE  on|off kernel jail for the Claude process tree (default on)
+  --real PATH        real Claude binary (auto-detected when omitted)
+  --no-alt           do not mirror the gate to <prefix>/usr/bin/claude
+  --prefix DIR       install under DIR instead of / (used by tests)
+  --dry-run          print the plan without writing anything
+
+VERIFY OPTIONS
+  --deep             also prove the jail blocks direct egress and allows the proxy
+
+DRILL OPTIONS
+  --service UNIT     systemd unit of the proxy core (stopped and restarted)
+  --wait SECONDS     how long to wait for recovery (default 30)
+
+EXIT CODES
+  0 success | 1 check failed | 2 usage | 77 gate refused to start
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# install
+# ---------------------------------------------------------------------------
+discover_real() {
+	local explicit="$1" alt_conf="$2" dir cand
+	if [ -n "$explicit" ]; then
+		[ -x "$explicit" ] || die "--real is not executable: $explicit"
+		readlink -f -- "$explicit"
+		return 0
+	fi
+	if [ -n "$alt_conf" ] && [ -L "$alt_conf" ]; then
+		cand=$(readlink -f -- "$alt_conf" 2>/dev/null || true)
+		if [ -n "$cand" ] && [ -x "$cand" ] && ! is_gate "$cand"; then
+			printf '%s\n' "$cand"
+			return 0
+		fi
+	fi
+	while IFS= read -r dir; do
+		[ -n "$dir" ] || continue
+		cand="$dir/claude"
+		[ -x "$cand" ] || continue
+		is_gate "$cand" && continue
+		readlink -f -- "$cand"
+		return 0
+	done < <(printf '%s' "$PATH" | tr ':' '\n')
+	return 1
+}
+
+resolver_allow() {
+	local ns out=""
+	[ -r /etc/resolv.conf ] || {
+		printf '%s' ""
+		return 0
+	}
+	for ns in $(awk '/^[[:space:]]*nameserver[[:space:]]+/ {print $2}' /etc/resolv.conf); do
+		case "$ns" in
+			*:*) continue ;; # IPv6 resolvers: skipped, CIDR formatting differs
+			127.*) continue ;;
+		esac
+		valid_ipv4 "$ns" || continue
+		out="$out $ns/32"
+	done
+	printf '%s' "$out"
+}
+
+cmd_install() {
+	local proxy="" exit_ip="" country="" strict="on" real="" no_alt="0" dry="0"
+	local allow_extra="" alt_conf=""
+
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--proxy) proxy="${2:-}"; shift 2 ;;
+			--exit-ip) exit_ip="${2:-}"; shift 2 ;;
+			--country) country="${2:-}"; shift 2 ;;
+			--allow) allow_extra="$allow_extra ${2:-}"; shift 2 ;;
+			--strict-net) strict="${2:-}"; shift 2 ;;
+			--real) real="${2:-}"; shift 2 ;;
+			--no-alt) no_alt="1"; shift ;;
+			--prefix) PREFIX="${2:-}"; shift 2 ;;
+			--dry-run) dry="1"; shift ;;
+			-h | --help) usage; exit 0 ;;
+			*) die "unknown install option: $1" ;;
+		esac
+	done
+
+	[ -n "$proxy" ] || die "--proxy is required"
+	[ -n "$exit_ip" ] || die "--exit-ip is required"
+	case "$proxy" in
+		http://* | https://*) ;;
+		*) die "--proxy must be an http:// or https:// (mixed) endpoint" ;;
+	esac
+	valid_ipv4 "$exit_ip" || die "--exit-ip must be a valid IPv4 address"
+	case "$country" in
+		"" | [A-Za-z][A-Za-z]) ;;
+		*) die "--country must be a two-letter code" ;;
+	esac
+	case "$strict" in
+		on | off) ;;
+		*) die "--strict-net must be on or off" ;;
+	esac
+	if [ "$strict" = "on" ] && ! in_sandbox; then
+		command -v systemd-run >/dev/null 2>&1 || die "--strict-net on needs systemd-run"
+	fi
+	need_root
+
+	local conf lib bindir sbin realdir state ts real_bin allow_all backup
+	conf=$(p "$CONF_REL")
+	lib=$(p "$LIB_REL")
+	bindir=$(p "$BIN_REL")
+	sbin=$(p "$SBIN_REL")
+	realdir=$(p "$REAL_REL")
+	state=$(p "$STATE_REL")
+	allow_all="127.0.0.0/8 ::1/128$(resolver_allow)"
+	if [ -n "$allow_extra" ]; then
+		allow_all="$allow_all $(printf '%s' "$allow_extra" | tr ',' ' ')"
+	fi
+	allow_all=$(printf '%s' "$allow_all" | tr -s ' ' | sed 's/^ //;s/ $//')
+
+	[ "$no_alt" = "1" ] && alt_conf="" || alt_conf=$(p "/usr/bin/claude")
+
+	real_bin=$(discover_real "$real" "$alt_conf") ||
+		die "no real claude binary found; pass --real /path/to/claude"
+
+	local guard_src check_src
+	guard_src=$(source_file guard-claude.sh) || die "guard-claude.sh not found next to this script"
+	check_src=$(source_file egress-check.sh) || die "egress-check.sh not found next to this script"
+
+	say "claude-egress-guard $VERSION - install plan"
+	say "  prefix        : ${PREFIX:-/}"
+	say "  proxy         : $proxy"
+	say "  expected exit : $exit_ip${country:+ ($country)}"
+	say "  real binary   : $real_bin"
+	say "  strict jail   : $strict"
+	say "  jail allow    : $allow_all"
+	say "  gate paths    : $bindir/claude${alt_conf:+, $alt_conf}"
+	say "  config        : $conf"
+	if [ "$dry" = "1" ]; then
+		say "dry run - nothing written"
+		return 0
+	fi
+
+	mkdir -p "$lib" "$bindir" "$sbin" "$realdir" "$(dirname -- "$conf")" "$state/backup"
+	ts=$(date -u +%Y%m%dT%H%M%SZ)
+	backup="$state/backup/$ts"
+	mkdir -p "$backup"
+
+	# Back up whatever the gate is about to replace.
+	local target
+	for target in "$bindir/claude" "$alt_conf"; do
+		[ -n "$target" ] || continue
+		[ -e "$target" ] || [ -L "$target" ] || continue
+		is_gate "$target" && continue
+		mkdir -p "$backup$(dirname -- "${target#"$PREFIX"}")"
+		cp -a -- "$target" "$backup${target#"$PREFIX"}" || die "backup failed for $target"
+		say "  backup        : $target -> $backup${target#"$PREFIX"}"
+	done
+
+	install -m 0755 -- "$guard_src" "$lib/guard-claude.sh"
+	install -m 0755 -- "$check_src" "$lib/egress-check.sh"
+	install -m 0755 -- "$lib/guard-claude.sh" "$bindir/claude"
+	if [ -n "$alt_conf" ]; then
+		mkdir -p -- "$(dirname -- "$alt_conf")"
+		rm -f -- "$alt_conf"
+		install -m 0755 -- "$lib/guard-claude.sh" "$alt_conf"
+	fi
+	install -m 0755 -- "$0" "$sbin/claude-egress-guard"
+	ln -sfn -- "$real_bin" "$realdir/claude"
+
+	umask 077
+	{
+		printf '# claude-egress-guard configuration - keep this file mode 0600\n'
+		printf '# Written by claude-egress-guard %s on %s\n' "$VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+		printf 'PROXY=%q\n' "$proxy"
+		printf 'EXPECTED_IP=%q\n' "$exit_ip"
+		printf 'EXPECTED_COUNTRY=%q\n' "$country"
+		printf 'STRICT_NET=%q\n' "$([ "$strict" = "on" ] && printf 1 || printf 0)"
+		printf 'ALLOW_IPS=%q\n' "$allow_all"
+		printf 'REAL_BIN=%q\n' "$realdir/claude"
+		printf 'CHECK_BIN=%q\n' "$lib/egress-check.sh"
+		printf 'ALT_PATH=%q\n' "$alt_conf"
+		printf 'CHECK_TIMEOUT=6\n'
+		printf 'TRACE_URL="https://www.cloudflare.com/cdn-cgi/trace"\n'
+		printf 'FALLBACK_URL="https://ipinfo.io/json"\n'
+	} >"$conf.tmp"
+	mv -f -- "$conf.tmp" "$conf"
+	chmod 600 "$conf"
+
+	say "installed."
+	say "next: $(p "$SBIN_REL")/claude-egress-guard verify --deep"
+}
+
+# ---------------------------------------------------------------------------
+# verify
+# ---------------------------------------------------------------------------
+cmd_verify() {
+	local deep="0"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--deep) deep="1"; shift ;;
+			--prefix) PREFIX="${2:-}"; shift 2 ;;
+			-h | --help) usage; exit 0 ;;
+			*) die "unknown verify option: $1" ;;
+		esac
+	done
+
+	FAILED=0
+	local conf bindir
+	conf=$(p "$CONF_REL")
+	lib=$(p "$LIB_REL")
+	bindir=$(p "$BIN_REL")
+
+	[ -r "$conf" ] && pass "config present: $conf" || fail "config missing: $conf"
+	# shellcheck source=/dev/null
+	[ -r "$conf" ] && . "$conf"
+
+	if [ -x "${REAL_BIN:-/nonexistent}" ]; then
+		pass "real binary executable"
+	else
+		fail "real binary not executable: ${REAL_BIN:-unset}"
+	fi
+
+	is_gate "$bindir/claude" && pass "gate installed: $bindir/claude" || fail "gate missing: $bindir/claude"
+	if [ -n "${ALT_PATH:-}" ]; then
+		if [ -L "$ALT_PATH" ]; then
+			fail "alternative path is still a symlink (absolute-path callers bypass the gate): $ALT_PATH"
+		elif is_gate "$ALT_PATH"; then
+			pass "gate mirrored: $ALT_PATH"
+		else
+			fail "alternative path is not the gate: $ALT_PATH"
+		fi
+	fi
+
+	if [ -x "${CHECK_BIN:-/nonexistent}" ]; then
+		if OUT=$(CEG_CONF="$conf" "$CHECK_BIN" 2>&1); then
+			pass "egress check: $OUT"
+		else
+			fail "egress check: $OUT"
+		fi
+	else
+		fail "egress checker missing: ${CHECK_BIN:-unset}"
+	fi
+
+	case "${STRICT_NET:-0}" in
+		1)
+			if [ -n "${ALLOW_IPS:-}" ] && [ -n "${ALLOW_IPS// /}" ]; then
+				pass "kernel jail enabled, allow list: $ALLOW_IPS"
+			else
+				fail "kernel jail enabled but ALLOW_IPS is empty"
+			fi
+			command -v systemd-run >/dev/null 2>&1 && pass "systemd-run available" || fail "systemd-run missing"
+			;;
+		*)
+			warn "kernel jail disabled (STRICT_NET=0) - process-tree egress is not enforced"
+			;;
+	esac
+
+	if [ -r /proc/sys/net/ipv6/conf/all/disable_ipv6 ]; then
+		if [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = "1" ]; then
+			pass "IPv6 disabled system-wide"
+		else
+			warn "IPv6 is enabled; make sure the proxy and the jail cover it"
+		fi
+	fi
+
+	if [ "$(stat -c '%a' "$conf" 2>/dev/null || printf '')" != "600" ]; then
+		warn "config file mode is not 0600"
+	fi
+
+	if [ "$deep" = "1" ] && [ "${STRICT_NET:-0}" = "1" ]; then
+		local curl_bin="${CEG_CURL:-curl}" direct_rc proxy_rc
+		if systemd-run --scope --quiet --collect -p IPAddressDeny=any \
+			-p "IPAddressAllow=$ALLOW_IPS" -- \
+			"$curl_bin" -4 -fsS --max-time 4 https://example.com/ >/dev/null 2>&1; then
+			direct_rc=0
+		else
+			direct_rc=1
+		fi
+		[ "$direct_rc" -ne 0 ] && pass "jail blocks direct egress" ||
+			fail "jail did NOT block direct egress - check ALLOW_IPS and systemd version"
+		if systemd-run --scope --quiet --collect -p IPAddressDeny=any \
+			-p "IPAddressAllow=$ALLOW_IPS" -- \
+			"$curl_bin" -4 -fsS --max-time 6 \
+			-x "${PROXY:-}" "${TRACE_URL:-https://www.cloudflare.com/cdn-cgi/trace}" >/dev/null 2>&1; then
+			proxy_rc=0
+		else
+			proxy_rc=1
+		fi
+		[ "$proxy_rc" -eq 0 ] && pass "jail still allows the proxy path" ||
+			fail "jail blocks the proxy path - add the proxy upstream to ALLOW_IPS"
+	fi
+
+	say "---- ${FAILED} check(s) failed"
+	[ "$FAILED" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+mask_proxy() {
+	printf '%s' "$1" | sed -E 's#(://)[^/@]*@#\1***@#'
+}
+
+cmd_status() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--prefix) PREFIX="${2:-}"; shift 2 ;;
+			-h | --help) usage; exit 0 ;;
+			*) die "unknown status option: $1" ;;
+		esac
+	done
+	local conf
+	conf=$(p "$CONF_REL")
+	[ -r "$conf" ] || die "config not found: $conf"
+	# shellcheck source=/dev/null
+	. "$conf"
+	say "config        : $conf"
+	say "proxy         : $(mask_proxy "${PROXY:-}")"
+	say "expected exit : ${EXPECTED_IP:-unset}${EXPECTED_COUNTRY:+ (${EXPECTED_COUNTRY})}"
+	say "strict jail   : ${STRICT_NET:-0}"
+	say "jail allow    : ${ALLOW_IPS:-}"
+	say "real binary   : ${REAL_BIN:-unset}"
+	say "gate          : $(p "$BIN_REL")/claude"
+	say "alt path      : ${ALT_PATH:-none}"
+	if [ -x "${CHECK_BIN:-/nonexistent}" ]; then
+		say "egress        : $(CEG_CONF="$conf" "$CHECK_BIN" 2>&1 || true)"
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# drill
+# ---------------------------------------------------------------------------
+cmd_drill() {
+	local service="" wait_s="30"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--service) service="${2:-}"; shift 2 ;;
+			--wait) wait_s="${2:-}"; shift 2 ;;
+			--prefix) PREFIX="${2:-}"; shift 2 ;;
+			-h | --help) usage; exit 0 ;;
+			*) die "unknown drill option: $1" ;;
+		esac
+	done
+	[ -n "$service" ] || die "--service is required (the proxy core unit)"
+	case "$service" in
+		*ssh* | *tailscale* | docker*) die "refusing to stop $service: it can cut this session or unrelated services" ;;
+	esac
+	need_root
+	command -v systemctl >/dev/null 2>&1 || die "systemctl not found"
+
+	local gate conf state_before
+	gate=$(p "$BIN_REL")/claude
+	conf=$(p "$CONF_REL")
+	[ -r "$conf" ] || die "config not found: $conf"
+	[ -x "$gate" ] || die "gate not installed: $gate"
+
+	state_before=$(systemctl is-active "$service" 2>/dev/null || true)
+	[ "$state_before" = "active" ] || die "$service is not active (state: ${state_before:-unknown})"
+
+	restore() {
+		if [ "$(systemctl is-active "$service" 2>/dev/null || true)" != "active" ]; then
+			systemctl start "$service" >/dev/null 2>&1 || true
+		fi
+	}
+	trap restore EXIT
+
+	CEG_CONF="$conf" "$gate" --ceg-check >/dev/null 2>&1 ||
+		die "gate refuses while the proxy is up - fix verify first"
+
+	say "stopping $service ..."
+	systemctl stop "$service" >/dev/null 2>&1 || die "could not stop $service"
+	sleep 2
+	if CEG_CONF="$conf" "$gate" --ceg-check >/dev/null 2>&1; then
+		restore
+		die "FAIL: gate still allowed a start while the proxy was down"
+	fi
+	say "PASS   gate refused to start with the proxy down"
+
+	say "starting $service ..."
+	systemctl start "$service" >/dev/null 2>&1 || die "could not start $service"
+	local i=0
+	while [ "$i" -lt "$wait_s" ]; do
+		if CEG_CONF="$conf" "$gate" --ceg-check >/dev/null 2>&1; then
+			say "PASS   gate recovered after ${i}s"
+			trap - EXIT
+			return 0
+		fi
+		sleep 1
+		i=$((i + 1))
+	done
+	die "FAIL: gate did not recover within ${wait_s}s after restarting $service"
+}
+
+# ---------------------------------------------------------------------------
+# uninstall
+# ---------------------------------------------------------------------------
+cmd_uninstall() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--prefix) PREFIX="${2:-}"; shift 2 ;;
+			-h | --help) usage; exit 0 ;;
+			*) die "unknown uninstall option: $1" ;;
+		esac
+	done
+	need_root
+	local state latest rel dest f
+	state=$(p "$STATE_REL")
+	latest=$(ls -1d "$state"/backup/*/ 2>/dev/null | sort | tail -n 1 || true)
+
+	if [ -n "$latest" ]; then
+		say "restoring files from $latest"
+		while IFS= read -r f; do
+			[ -n "$f" ] || continue
+			rel="${f#"$latest"}"
+			case "$rel" in
+				usr/local/bin/claude | usr/bin/claude) ;;
+				*) continue ;;
+			esac
+			dest="${PREFIX}/${rel}"
+			mkdir -p -- "$(dirname -- "$dest")"
+			cp -a -- "$f" "$dest" 2>/dev/null || warn "could not restore $dest"
+			say "  restored $dest"
+		done < <(find "$latest" -mindepth 1 \( -type f -o -type l \) 2>/dev/null)
+	fi
+
+	rm -f -- "$(p "$BIN_REL")/claude"
+	rm -f -- "$(p "$SBIN_REL")/claude-egress-guard"
+	rm -f -- "$(p "$CONF_REL")"
+	rm -rf -- "$(p "$LIB_REL")"
+	rm -f -- "$(p "$REAL_REL")/claude"
+	say "gate removed; backups kept in $state"
+}
+
+# ---------------------------------------------------------------------------
+# show
+# ---------------------------------------------------------------------------
+cmd_show() {
+	local what="${1:-}" src
+	case "$what" in
+		guard) src=$(source_file guard-claude.sh) || die "guard-claude.sh not found" ;;
+		check) src=$(source_file egress-check.sh) || die "egress-check.sh not found" ;;
+		config)
+			src=$(p "$CONF_REL")
+			[ -r "$src" ] || die "config not found: $src"
+			;;
+		*) die "usage: claude-egress-guard show <guard|check|config>" ;;
+	esac
+	cat -- "$src"
+}
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+FAILED=0
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+	install) cmd_install "$@" ;;
+	verify) cmd_verify "$@" ;;
+	status) cmd_status "$@" ;;
+	drill) cmd_drill "$@" ;;
+	uninstall) cmd_uninstall "$@" ;;
+	show) cmd_show "$@" ;;
+	version | --version) say "claude-egress-guard $VERSION" ;;
+	help | --help | -h | "") usage ;;
+	*) err "unknown command: $cmd"; usage; exit 2 ;;
+esac

@@ -1,0 +1,24 @@
+# Local policy files with real addresses never belong in the repository.
+*.local.conf
+claude-egress-guard.conf
+!skills/claude-egress-guard/templates/claude-egress-guard.conf.example
+
+# Operator artefacts
+evidence/
+*.evidence.json
+drill-output/
+*.log
+
+# Editors and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+
+# Local environment
+.env
+.env.*
+!.env.example
