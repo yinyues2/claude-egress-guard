@@ -33,6 +33,22 @@ to start unless traffic leaves through one verified exit.
 - Never touch account registration, payment, identity verification or provider
   decisions.
 
+## Fresh host
+
+If Claude Code is not installed, or the operator has no account yet, read
+`skills/claude-egress-guard/references/zero-to-deployed.md` first. The order is:
+host baseline → proxy proven stable → install the client **without launching it**
+→ install the gate and prove it → first login through the gate → settings →
+evidence. Account creation, payment, terms acceptance and identity verification
+are operator-only; never do them for someone.
+
+```bash
+claude-egress-guard preflight --proxy "$PROXY" --exit-ip "$EXIT_IP" --country "$CC"
+```
+
+Read-only. `FAIL` blocks the deployment; `WARN` is a decision the operator must
+accept out loud.
+
 ## Entry points
 
 ```bash
@@ -41,6 +57,9 @@ to start unless traffic leaves through one verified exit.
 
 # full install, unattended
 sudo ./install.sh --proxy "$PROXY" --exit-ip "$EXIT_IP" --country "$CC" --yes
+
+# readiness check before anything else
+claude-egress-guard preflight --proxy "$PROXY" --exit-ip "$EXIT_IP" --json
 
 # proof
 sudo claude-egress-guard verify --deep

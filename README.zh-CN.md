@@ -46,6 +46,37 @@ skill 里写清的约束（[`SKILL.md`](skills/claude-egress-guard/SKILL.md)）�
 
 ---
 
+## 从零开始：新机器、还没注册过
+
+下面的内容默认 Claude Code 已经装好并登录过。如果是从零开始，**顺序**决定第一次
+部署安不安全：[`references/zero-to-deployed.md`](skills/claude-egress-guard/references/zero-to-deployed.md)
+给了九个阶段，并标明每一阶段由谁执行。
+
+```
+0  资格与环境判断：一人一号、一个固定出口            操作者
+1  主机基线：时钟、时区、磁盘、IPv6 决策              agent
+2  先把代理跑通并确认稳定，再谈注册                   agent
+3  安装 Claude Code，装完不要启动                     agent
+4  装闸门，verify --deep + drill                      agent
+5  第一次登录：走闸门，在你自己的浏览器完成           操作者
+6  首次设置：客户端里不要再单独设代理                 操作者 + agent
+7  留证：记录证据、打开拒绝日志                        agent
+8  日常：升级后 verify，出口漂移用 set-exit           agent
+```
+
+```bash
+claude-egress-guard preflight --proxy http://127.0.0.1:1080 --exit-ip 203.0.113.10 --country JP
+```
+
+`preflight` 只读：检查平台、systemd、bash、时钟、时区、IPv6、磁盘、Node、
+Claude Code，给了代理还会实测出口，最后输出 PASS/WARN/FAIL 和阻塞项数量。
+出现 FAIL 就不要继续。
+
+注册账号、付款、身份核验**故意不做自动化**：skill 明确禁止 agent 代办，runbook 会
+告诉操作者在什么情况下应当停下来，而不是硬凑材料。
+
+---
+
 ## 一键安装
 
 ```bash
@@ -164,6 +195,7 @@ claude（任意入口：shell、Python、cron、systemd、绝对路径）
 
 | 命令 | 用途 |
 | --- | --- |
+| `preflight [--proxy URL --exit-ip ADDR --country CC]` | 新机器只读体检，含实时出口探测；`--json` 给工具用 |
 | `install ...` | 打印计划、备份、安装（支持 `--dry-run`） |
 | `verify` | 静态检查 + 实时出口核验 |
 | `verify --deep` | 额外证明「白名单挡住直连、仍放行代理」 |
@@ -262,7 +294,7 @@ sudo skills/claude-egress-guard/scripts/claude-egress-guard install \
 ## 开发与测试
 
 ```bash
-make check        # shellcheck + 42 项自测 + 泄漏扫描
+make check        # shellcheck + 44 项自测 + 泄漏扫描
 make test         # 只跑沙箱自测（不需要 root，不联网）
 make lint
 make scan
@@ -284,7 +316,7 @@ skills/claude-egress-guard/
   scripts/claude-egress-guard   安装/验证/演练/卸载 CLI
   scripts/guard-claude.sh   闸门本体（安装为 `claude`）
   scripts/egress-check.sh   出口检查器（可单独运行）
-  scripts/selftest.sh       42 项沙箱断言
+  scripts/selftest.sh       44 项沙箱断言
   templates/                策略文件示例
 tools/leak-scan.py          拦截凭据、个人标识和非文档网段
 ```

@@ -1,7 +1,7 @@
 ---
 name: claude-egress-guard
 description: "Use when pinning Claude Code to one egress on Linux — installs a fail-closed gate, kernel net jail, and drills it."
-version: 1.1.0
+version: 1.2.0
 author: claude-egress-guard contributors
 license: Apache-2.0
 platforms: [linux]
@@ -28,6 +28,8 @@ IP allow list. Anything unexpected refuses to start instead of falling back.
   already polluted.
 - The operator asks to "lock down", "pin", or "verify" the Claude egress, or to
   prove it still works after a package update.
+- The host is fresh and the operator has never had an account: start with
+  `references/zero-to-deployed.md` instead of improvising an order of operations.
 
 Do not use it to hide from a provider, to run multiple accounts, to rotate
 identities, or as a substitute for the proxy itself. It gates one binary; it does
@@ -108,6 +110,36 @@ What the operator should see when it is working:
 Do not "fix" a refusal by setting `STRICT_NET=0` unless the operator explicitly
 asks for that trade-off. Do not widen `ALLOW_IPS` to `0.0.0.0/0`.
 
+## Fresh host, no account yet
+
+Do not start with the installer. The order is what makes a first deployment safe,
+and two of the phases are not yours to run. Follow
+`references/zero-to-deployed.md`; the short form:
+
+| Phase | Goal | Who |
+| --- | --- | --- |
+| 0 | Eligibility, one person/one account/one egress, payment in your own name | operator decides; you state the stop conditions |
+| 1 | Host baseline: updates, clock, timezone, disk, IPv6 decision | you |
+| 2 | Proxy up and proven stable before any account action | you |
+| 3 | Install Claude Code, then **do not launch it** | you |
+| 4 | Install the gate and prove it: `verify --deep` + `drill` | you |
+| 5 | First login through the gate, in the operator's own browser | operator |
+| 6 | First-run settings: no proxy inside the client, updates on | operator decides, you apply |
+| 7 | Evidence record + `LOG_REFUSALS=1` | you |
+| 8 | Maintenance: `verify --deep` after updates, `set-exit` on rotation | you |
+
+Run the read-only readiness check before phase 2 and again before phase 4:
+
+```bash
+claude-egress-guard preflight --proxy "$PROXY" --exit-ip "$EXIT_IP" --country "$CC"
+```
+
+`FAIL` items block. `WARN` items are decisions the operator must accept in
+writing, not things to paper over.
+
+**Hard stop:** never create an account, enter payment details, accept terms, or
+handle identity documents. If eligibility is unclear, stop and say so.
+
 ## Changing policy
 
 - **Rotating exit.** `sudo claude-egress-guard set-exit --ip NEW [--country CC]`
@@ -157,4 +189,5 @@ Left:      <what the operator still has to do, if anything>
 ## References
 
 - `references/agent-playbook.md` — full command sequence, allow-list rules, evidence record
+- `references/zero-to-deployed.md` — phase-by-phase runbook for a fresh host with no account
 - `references/troubleshooting.md` — symptom → cause → fix table

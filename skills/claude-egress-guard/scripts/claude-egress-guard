@@ -14,7 +14,7 @@
 # Everything it replaces is copied to the backup directory first.
 set -u
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 MARKER="claude-egress-guard"
 
 CONF_REL="/etc/claude-egress-guard.conf"
@@ -91,6 +91,7 @@ USAGE
   claude-egress-guard install --proxy URL --exit-ip ADDR [options]
   claude-egress-guard verify [--deep] [--prefix DIR]
   claude-egress-guard status [--prefix DIR]
+  claude-egress-guard preflight [--proxy URL] [--exit-ip ADDR] [--country CC] [--json]
   claude-egress-guard set-exit --ip ADDR [--country CC] [--prefix DIR]
   claude-egress-guard drill --service UNIT [--prefix DIR]
   claude-egress-guard uninstall [--prefix DIR]
@@ -112,6 +113,12 @@ INSTALL OPTIONS
 
 VERIFY OPTIONS
   --deep             also prove the jail blocks direct egress and allows the proxy
+
+PREFLIGHT OPTIONS
+  --proxy URL        also prove the proxy answers and report its exit
+  --exit-ip ADDR     expected exit to compare against
+  --country CC       expected country to compare against
+  --json             machine-readable output
 
 SET-EXIT OPTIONS
   --ip ADDR          new expected exit address; must match what the proxy reports now
@@ -437,6 +444,172 @@ cmd_status() {
 }
 
 # ---------------------------------------------------------------------------
+# preflight — read-only readiness check, safe on a host with nothing installed
+# ---------------------------------------------------------------------------
+cmd_preflight() {
+	local proxy="" expect="" country="" json="0" timeout="6"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--proxy) proxy="${2:-}"; shift 2 ;;
+			--exit-ip) expect="${2:-}"; shift 2 ;;
+			--country) country="${2:-}"; shift 2 ;;
+			--json) json="1"; shift ;;
+			--timeout) timeout="${2:-}"; shift 2 ;;
+			-h | --help) usage; exit 0 ;;
+			*) die "unknown preflight option: $1" ;;
+		esac
+	done
+
+	PF_BLOCKERS=0
+	PF_JSON=""
+	pf_add() { # name status detail
+		local name="$1" status="$2" detail="${3//\"/\'}"
+		detail="${detail//$'\n'/ }"
+		[ "$json" = "1" ] || printf '%-12s %-5s %s\n' "$name" "$status" "$detail"
+		PF_JSON="$PF_JSON{\"name\":\"$name\",\"status\":\"$status\",\"detail\":\"$detail\"},"
+		[ "$status" = "FAIL" ] && PF_BLOCKERS=$((PF_BLOCKERS + 1))
+		return 0
+	}
+
+	[ "$json" = "1" ] || printf '%-12s %-5s %s\n' "check" "state" "detail"
+
+	# Platform and privilege model.
+	if [ "$(uname -s)" = "Linux" ]; then
+		pf_add platform PASS "$(uname -sr)"
+	else
+		pf_add platform FAIL "$(uname -s) is not supported"
+	fi
+	if [ "$(id -u)" -eq 0 ]; then
+		pf_add privileges PASS "root"
+	else
+		pf_add privileges WARN "not root: install and STRICT_NET=1 need root"
+	fi
+
+	# systemd 235+ is what provides IPAddressDeny=.
+	if command -v systemctl >/dev/null 2>&1; then
+		local sdv
+		sdv=$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}')
+		case "$sdv" in
+			'' | *[!0-9]*) pf_add systemd FAIL "version unknown" ;;
+			*)
+				if [ "$sdv" -ge 235 ]; then
+					pf_add systemd PASS "$sdv"
+				else
+					pf_add systemd FAIL "$sdv (need 235+)"
+				fi
+				;;
+		esac
+	else
+		pf_add systemd FAIL "systemctl not found"
+	fi
+
+	if [ "${BASH_VERSINFO[0]:-0}" -gt 4 ] ||
+		{ [ "${BASH_VERSINFO[0]:-0}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -ge 3 ]; }; then
+		pf_add bash PASS "${BASH_VERSION%%(*}"
+	else
+		pf_add bash FAIL "${BASH_VERSION%%(*} (need 4.3+)"
+	fi
+
+	# Clock and timezone: a wrong clock breaks OAuth codes and TLS at once.
+	local tz ntp
+	tz=$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)
+	[ -n "$tz" ] && pf_add timezone PASS "$tz" || pf_add timezone WARN "unknown"
+	ntp=$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)
+	case "$ntp" in
+		yes) pf_add clock PASS "synchronised" ;;
+		no) pf_add clock WARN "not synchronised; enable NTP before logging in" ;;
+		*) pf_add clock WARN "cannot read NTP state" ;;
+	esac
+
+	# IPv6 is not required to be off, but it must be covered if it is on.
+	if [ -r /proc/sys/net/ipv6/conf/all/disable_ipv6 ]; then
+		if [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = "1" ]; then
+			pf_add ipv6 PASS "disabled on all interfaces"
+		else
+			pf_add ipv6 WARN "enabled; make sure the proxy and jail cover it"
+		fi
+	else
+		pf_add ipv6 PASS "no IPv6 stack"
+	fi
+
+	local free_kb
+	free_kb=$(df -Pk /var 2>/dev/null | awk 'NR==2 {print $4}')
+	case "$free_kb" in
+		'' | *[!0-9]*) pf_add disk WARN "cannot read free space on /var" ;;
+		*)
+			if [ "$free_kb" -ge 2097152 ]; then
+				pf_add disk PASS "$((free_kb / 1048576))G free on /var"
+			else
+				pf_add disk FAIL "$((free_kb / 1048576))G free on /var (need 2G)"
+			fi
+			;;
+	esac
+
+	# Node and Claude Code: absent is fine before phase 3, but say so.
+	if command -v node >/dev/null 2>&1; then
+		local nv nmaj
+		nv=$(node -v 2>/dev/null)
+		nmaj="${nv#v}"
+		nmaj="${nmaj%%.*}"
+		case "$nmaj" in
+			'' | *[!0-9]*) pf_add node WARN "$nv" ;;
+			*) [ "$nmaj" -ge 18 ] && pf_add node PASS "$nv" || pf_add node WARN "$nv (use a current LTS)" ;;
+		esac
+	else
+		pf_add node WARN "not installed (needed for the npm install path)"
+	fi
+
+	local gate_path real
+	gate_path="$(p "$BIN_REL")/claude"
+	if [ -x "$gate_path" ] && is_gate "$gate_path"; then
+		real=$(readlink -f -- "$(p "$REAL_REL")/claude" 2>/dev/null || true)
+		pf_add claude PASS "gated: ${real:-$gate_path}"
+	elif real=$(discover_real "" "") && [ -n "$real" ]; then
+		pf_add claude WARN "installed but not gated yet: $real"
+	else
+		pf_add claude WARN "not installed yet; install it in phase 3"
+	fi
+
+	# Egress: only checked when a proxy is supplied. Uses the trace endpoint so
+	# the operator learns the real exit before creating anything.
+	if [ -n "$proxy" ]; then
+		case "$proxy" in
+			http://* | https://*) ;;
+			*) die "--proxy must start with http:// or https://" ;;
+		esac
+		local trace ip loc
+		trace=$(curl -4 -fsS --max-time "$timeout" -x "$proxy" \
+			"${TRACE_URL:-https://www.cloudflare.com/cdn-cgi/trace}" 2>/dev/null || true)
+		ip=$(printf '%s\n' "$trace" | sed -n 's/^ip=//p' | head -n 1)
+		loc=$(printf '%s\n' "$trace" | sed -n 's/^loc=//p' | head -n 1)
+		if [ -n "$ip" ]; then
+			pf_add egress PASS "exit=$ip country=${loc:-?}"
+			if [ -n "$expect" ]; then
+				[ "$ip" = "$expect" ] && pf_add exit PASS "$ip" ||
+					pf_add exit FAIL "expected $expect, proxy reports $ip"
+			fi
+			if [ -n "$country" ]; then
+				[ "$loc" = "$country" ] && pf_add country PASS "$loc" ||
+					pf_add country FAIL "expected $country, proxy reports ${loc:-?}"
+			fi
+		else
+			pf_add egress FAIL "no reply through $proxy"
+		fi
+	else
+		pf_add egress WARN "no --proxy given; the exit was not checked"
+	fi
+
+	if [ "$json" = "1" ]; then
+		printf '{"checks":[%s],"blockers":%d}\n' "${PF_JSON%,}" "$PF_BLOCKERS"
+	else
+		say ""
+		say "---- blockers: $PF_BLOCKERS"
+		[ "$PF_BLOCKERS" -eq 0 ] && say "next: references/zero-to-deployed.md (phases 2-8)"
+	fi
+	[ "$PF_BLOCKERS" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # set-exit — follow a rotating proxy exit without hand-editing policy
 # ---------------------------------------------------------------------------
 cmd_set_exit() {
@@ -635,6 +808,7 @@ case "$cmd" in
 	install) cmd_install "$@" ;;
 	verify) cmd_verify "$@" ;;
 	status) cmd_status "$@" ;;
+	preflight) cmd_preflight "$@" ;;
 	set-exit) cmd_set_exit "$@" ;;
 	drill) cmd_drill "$@" ;;
 	uninstall) cmd_uninstall "$@" ;;

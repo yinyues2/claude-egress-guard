@@ -56,6 +56,39 @@ LLM tooling), [`references/troubleshooting.md`](skills/claude-egress-guard/refer
 
 ---
 
+## From zero — fresh host, no account yet
+
+Everything below assumes Claude Code is already installed and logged in. If it is
+not, the order of operations decides whether the first deployment is safe:
+[`references/zero-to-deployed.md`](skills/claude-egress-guard/references/zero-to-deployed.md)
+walks nine phases and names who does each one.
+
+```
+0  eligibility, one person / one account / one egress     operator
+1  host baseline: clock, timezone, disk, IPv6 decision    agent
+2  proxy up and proven stable before any signup           agent
+3  install Claude Code, then do not launch it             agent
+4  install the gate, verify --deep, drill                 agent
+5  first login, through the gate, in your own browser     operator
+6  first-run settings: no proxy inside the client         operator + agent
+7  evidence record, refusal logging on                    agent
+8  maintenance: verify after updates, set-exit on drift   agent
+```
+
+```bash
+claude-egress-guard preflight --proxy http://127.0.0.1:1080 --exit-ip 203.0.113.10 --country JP
+```
+
+`preflight` is read-only: it checks platform, systemd, bash, clock, timezone,
+IPv6, disk, Node, Claude Code and (when given a proxy) the live exit, then prints
+`PASS`/`WARN`/`FAIL` with a blocker count. `FAIL` stops the deployment.
+
+Account creation, payment and identity verification are deliberately **not**
+automatable here. The skill forbids an agent from doing them, and the runbook
+tells the operator when to stop rather than improvise.
+
+---
+
 ## One-command install
 
 ```bash
@@ -185,6 +218,7 @@ depending on distance). `--version` and `--help` skip it.
 
 | Command | Purpose |
 | --- | --- |
+| `claude-egress-guard preflight [--proxy URL --exit-ip ADDR --country CC]` | read-only readiness check for a fresh host, incl. live exit probe; `--json` for tooling |
 | `claude-egress-guard install ...` | plan, back up, install, print the next step (`--dry-run` supported) |
 | `claude-egress-guard verify` | static checks + live exit check |
 | `claude-egress-guard verify --deep` | adds proof that the jail blocks direct egress and still allows the proxy |
@@ -295,7 +329,7 @@ sudo skills/claude-egress-guard/scripts/claude-egress-guard install \
 ## Development
 
 ```bash
-make check        # shellcheck + 42 self-tests + leak scan
+make check        # shellcheck + 44 self-tests + leak scan
 make test         # sandboxed suite only (no root, no network)
 make lint
 make scan
@@ -318,7 +352,7 @@ skills/claude-egress-guard/
   scripts/claude-egress-guard   installer/verifier/drill/uninstall CLI
   scripts/guard-claude.sh   the gate (installed as `claude`)
   scripts/egress-check.sh   exit checker (standalone runnable)
-  scripts/selftest.sh       42 sandboxed assertions
+  scripts/selftest.sh       44 sandboxed assertions
   templates/                example policy file
 tools/leak-scan.py          blocks credentials, PII and non-documentation IPs
 ```

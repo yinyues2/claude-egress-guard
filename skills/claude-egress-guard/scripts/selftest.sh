@@ -189,6 +189,20 @@ grep -q 'refused:' "$WORK/logger.log" && ok "refusal written to the journald tar
 sed -i 's/^LOG_REFUSALS=1/LOG_REFUSALS=0/' "$CONF"
 
 # ---------------------------------------------------------------------------
+printf 'preflight\n'
+# ---------------------------------------------------------------------------
+"$CLI" preflight --json >"$WORK/pf.json" 2>/dev/null
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["checks"] and isinstance(d["blockers"], int)' \
+	"$WORK/pf.json" 2>/dev/null && ok "preflight emits valid JSON" || no "preflight JSON invalid"
+"$CLI" preflight >/dev/null 2>&1
+pf_rc=$?
+if [ "$pf_rc" -eq 0 ] || [ "$pf_rc" -eq 1 ]; then
+	ok "preflight exits 0 or 1 (got $pf_rc)"
+else
+	no "preflight returned rc=$pf_rc"
+fi
+
+# ---------------------------------------------------------------------------
 printf 'verify / status / uninstall\n'
 # ---------------------------------------------------------------------------
 FAKE_IP=203.0.113.10 "$CLI" verify --prefix "$PREFIX" >/dev/null 2>&1

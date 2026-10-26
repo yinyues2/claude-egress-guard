@@ -3,6 +3,24 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog; versions use semantic versioning.
 
+## [1.2.0] - 2026-10-27
+
+### Added
+
+- `references/zero-to-deployed.md`: a nine-phase runbook for a host with nothing
+  installed and an operator with no account — eligibility, host baseline, proxy
+  proven stable before signup, client installed but not launched, gate proven,
+  first login through the gate, first-run settings, evidence, maintenance. Each
+  phase names who runs it and where to stop.
+- `claude-egress-guard preflight [--proxy URL] [--exit-ip ADDR] [--country CC] [--json]`:
+  read-only readiness check for platform, systemd, bash, clock, timezone, IPv6,
+  disk, Node, Claude Code and the live exit, with `PASS`/`WARN`/`FAIL` and a
+  blocker count. Nothing is written.
+- README (both languages) and `AGENTS.md` gained a "from zero" section that puts
+  the runbook ahead of the installer and states plainly that account work is
+  operator-only.
+- Two self-tests for `preflight`: valid JSON and a bounded exit code.
+
 ## [1.1.0] - 2026-10-27
 
 ### Added
