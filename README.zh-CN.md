@@ -32,7 +32,7 @@ claude（任意入口）
 ## 快速开始
 
 ```bash
-git clone https://github.com/<owner>/claude-egress-guard.git
+git clone https://github.com/yinyues2/claude-egress-guard.git
 cd claude-egress-guard/skills/claude-egress-guard/scripts
 
 sudo ./claude-egress-guard install \

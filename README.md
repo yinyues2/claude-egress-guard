@@ -52,7 +52,7 @@ claude  (any entry point)
 ## Quick start
 
 ```bash
-git clone https://github.com/<owner>/claude-egress-guard.git
+git clone https://github.com/yinyues2/claude-egress-guard.git
 cd claude-egress-guard/skills/claude-egress-guard/scripts
 
 # 1) show the plan first
