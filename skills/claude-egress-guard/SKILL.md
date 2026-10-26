@@ -1,7 +1,7 @@
 ---
 name: claude-egress-guard
 description: "Use when deploying or auditing Claude Code on Linux — one-stop safe setup: preflight, egress gate, operation baseline, incident drills."
-version: 1.3.0
+version: 1.4.0
 author: claude-egress-guard contributors
 license: Apache-2.0
 platforms: [linux]
@@ -82,8 +82,13 @@ preferred entry point. It prints the plan, installs, backs up, then runs
 `verify --deep` and stops on the first failed layer:
 
 ```bash
-sudo ./install.sh --proxy "$PROXY" --exit-ip "$EXIT_IP" [--country "$CC"] [--allow "$CIDRS"]
+sudo ./install.sh --proxy "$PROXY" --exit-ip "$EXIT_IP" [--country "$CC"] [--allow "$CIDRS"] \
+     [--native-path ~/.local/bin/claude]
 ```
+
+`--native-path` is required when the vendor installer owns the binary: it puts
+`~/.local/bin` ahead of `/usr/local/bin` in PATH, so a gate at `/usr/local/bin`
+alone would never be reached.
 
 With only the skill directory installed, drive the CLI directly:
 

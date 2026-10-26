@@ -236,5 +236,47 @@ else
 	printf '  skip install.sh (not a checkout)\n'
 fi
 
+printf '\n%s\n' "vendor (native) install path"
+# ---------------------------------------------------------------------------
+P2="$WORK/prefix2"
+NB="$P2/root/.local/bin"
+NV="$P2/root/.local/share/claude/versions"
+mkdir -p "$NB" "$NV"
+printf '#!/bin/sh\nprintf "REAL_CLAUDE_999\\n"\n' >"$NV/9.9.9"
+chmod 0755 "$NV/9.9.9"
+ln -sfn "$NV/9.9.9" "$NB/claude"
+
+"$CLI" install --prefix "$P2" --proxy http://127.0.0.1:1080 \
+	--exit-ip 203.0.113.10 --country JP --strict-net off \
+	--native-path /root/.local/bin/claude >/dev/null 2>&1
+expect_rc "install accepts --native-path" 0 $?
+head -c 200 "$NB/claude" | grep -q claude-egress-guard && ok "vendor path gated" || no "vendor path not gated"
+grep -q 'NATIVE_PATH=.*\.local/bin/claude' "$P2/etc/claude-egress-guard.conf" &&
+	ok "vendor path recorded in the policy" || no "NATIVE_PATH missing from the policy"
+
+FAKE_IP=203.0.113.10 "$CLI" verify --prefix "$P2" >/dev/null 2>&1
+expect_rc "verify passes with a gated vendor path" 0 $?
+
+# Simulate the vendor updater re-pointing the symlink at a newer version, then a
+# start through the primary gate (the recovery path an operator has after an
+# update).
+printf '#!/bin/sh\nprintf "REAL_CLAUDE_1000\\n"\n' >"$NV/9.9.10"
+chmod 0755 "$NV/9.9.10"
+rm -f "$NB/claude"
+ln -sfn "$NV/9.9.10" "$NB/claude"
+OUT=$(CEG_CONF="$P2/etc/claude-egress-guard.conf" FAKE_IP=203.0.113.10 \
+	"$P2/usr/local/bin/claude" 2>&1)
+case "$OUT" in
+	REAL_CLAUDE_1000*) ok "gate follows a vendor update and restores itself" ;;
+	*) no "gate did not follow the update: $OUT" ;;
+esac
+head -c 200 "$NB/claude" | grep -q claude-egress-guard &&
+	ok "vendor path restored to the gate" || no "vendor path not restored"
+[ "$(readlink -f "$P2/opt/claude-real/claude")" = "$NV/9.9.10" ] &&
+	ok "pin re-pointed at the new version" || no "pin still on the old version"
+
+"$CLI" uninstall --prefix "$P2" >/dev/null 2>&1
+[ -L "$NB/claude" ] && ok "vendor symlink restored on uninstall" || no "vendor path not restored on uninstall"
+
 printf '\n%d passed, %d failed\n' "$PASSED" "$FAILED"
 [ "$FAILED" -eq 0 ]

@@ -3,6 +3,28 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog; versions use semantic versioning.
 
+## [1.4.0] - 2026-10-27
+
+### Fixed
+
+- PATH precedence: the vendor installer puts `~/.local/bin` ahead of
+  `/usr/local/bin`, so an ungated vendor binary shadowed the gate while `verify`
+  still reported a clean host. `verify` and `preflight` now resolve
+  `command -v claude` and fail when it is not the gate.
+- `zero-to-deployed.md` assumed the npm layout and 2 GB RAM. Corrected to the
+  vendor's published minimum (4 GB), and added base packages, swap, a
+  boot-persistent proxy, the DNS scope, the real login mechanics, `claude doctor`
+  ordering, and a rollback phase.
+
+### Added
+
+- `--native-path PATH` (CLI and installer): gate the vendor installer's
+  `~/.local/bin/claude`, pin its versioned target, heal after a vendor update,
+  and restore it on uninstall. When this path is gated the launcher also exports
+  `DISABLE_AUTOUPDATER=1`, so a background update cannot replace the gate without
+  an operator action.
+- `templates/evidence.md`: deployment record plus change log.
+
 ## [1.3.0] - 2026-10-27
 
 ### Changed

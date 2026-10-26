@@ -57,21 +57,28 @@ case "${1:-}" in
 esac
 
 # ---------------------------------------------------------------------------
-# 2. Self-heal: package updates rewrite the /usr/bin symlink back to the real
-#    binary. Restore the gate copy so absolute-path callers stay covered.
+# 2. Self-heal after package or vendor updates. npm rewrites the managed path
+#    back to a symlink; the vendor installer re-points ~/.local/bin/claude at a
+#    new version directory. Follow the new target first (so the pin does not
+#    stay on an old binary), then restore the gate copy.
 # ---------------------------------------------------------------------------
-ALT="${ALT_PATH:-}"
-if [ -n "$ALT" ]; then
-	SELF_REAL=$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")
-	ALT_REAL=$(readlink -f -- "$ALT" 2>/dev/null || printf '%s' "$ALT")
-	if [ "$SELF_REAL" != "$ALT_REAL" ] && [ -w "$(dirname -- "$ALT")" ]; then
-		if ! head -c 200 -- "$ALT" 2>/dev/null | grep -q -- "$MARKER"; then
-			# rm first: cp through an npm symlink would overwrite the real binary.
-			rm -f -- "$ALT" 2>/dev/null || true
-			install -m 0755 -- "$0" "$ALT" 2>/dev/null || true
-		fi
+heal_path() {
+	local hp="$1" hp_target hp_real
+	[ -n "$hp" ] || return 0
+	[ -e "$hp" ] || [ -L "$hp" ] || return 0
+	head -c 200 -- "$hp" 2>/dev/null | grep -q -- "$MARKER" && return 0
+	hp_target=$(readlink -f -- "$hp" 2>/dev/null || printf '%s' "$hp")
+	hp_real=$(readlink -f -- "$REAL_BIN" 2>/dev/null || printf '%s' "$REAL_BIN")
+	if [ -n "$hp_target" ] && [ -x "$hp_target" ] && [ "$hp_target" != "$hp_real" ]; then
+		ln -sfn -- "$hp_target" "$REAL_BIN" 2>/dev/null || true
 	fi
-fi
+	[ -w "$(dirname -- "$hp")" ] || return 0
+	# rm first: installing over a symlink would overwrite the binary it points at.
+	rm -f -- "$hp" 2>/dev/null || true
+	install -m 0755 -- "$0" "$hp" 2>/dev/null || true
+}
+heal_path "${ALT_PATH:-}"
+heal_path "${NATIVE_PATH:-}"
 
 # ---------------------------------------------------------------------------
 # 3. Egress check. Runs before every start; failure is fatal, never a warning.
@@ -91,6 +98,14 @@ export ALL_PROXY="$PROXY" all_proxy="$PROXY"
 export http_proxy="$PROXY" https_proxy="$PROXY"
 export HTTP_PROXY="$PROXY" HTTPS_PROXY="$PROXY"
 export NO_PROXY="127.0.0.1,localhost,::1" no_proxy="127.0.0.1,localhost,::1"
+
+# The vendor installer owns ~/.local/bin/claude and a background updater will
+# rewrite it, replacing this gate. When that path is gated, turn the background
+# updater off so the only writer is an explicit `claude update`; the operator
+# re-runs verify afterwards.
+if [ -n "${NATIVE_PATH:-}" ]; then
+	export DISABLE_AUTOUPDATER="${DISABLE_AUTOUPDATER:-1}"
+fi
 
 # ---------------------------------------------------------------------------
 # 5. Optional kernel-level jail: only loopback, the proxy upstream and the

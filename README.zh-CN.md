@@ -147,6 +147,7 @@ PASS   jail still allows the proxy path
 claude（任意入口：shell、Python、cron、systemd、绝对路径）
   └─ /usr/local/bin/claude          闸门：核验出口 -> 注入代理 -> 内核白名单
        ├─ /usr/bin/claude           同一份闸门（npm 更新会改回符号链接，闸门自愈）
+       ├─ ~/.local/bin/claude       可选官方路径（--native-path），同样自愈
        └─ /opt/claude-real/claude   真身（符号链接，跟随包更新）
             └─ 你的代理          127.0.0.1:1080 -> 预期出口地址
 ```
@@ -187,7 +188,8 @@ claude（任意入口：shell、Python、cron、systemd、绝对路径）
 | Shell | bash 4.3+ |
 | 工具 | `curl`、`install`、`readlink`、`mktemp`、`awk`、`sed` |
 | 权限 | 正式安装要 root；`--prefix` 可做无特权沙箱 |
-| Claude Code | 已安装，npm 全局或官方安装器均可 |
+| Claude Code | 已安装：官方安装器（`~/.local/bin`，需加 `--native-path`）或 npm 全局 |
+| 内存 | 4 GB（官方最低要求；2 GB 需配 swap） |
 | 代理 | 本地 HTTP 或 mixed 入口（只有 SOCKS 的话，客户端代理变量用不了） |
 
 已实测：Debian 13 / systemd 257 / Claude Code 2.1.296（npm 全局），代理在回环上的
@@ -262,6 +264,7 @@ journalctl -t claude-egress-guard --since -24h
 | 事件 | 动作 |
 | --- | --- |
 | `npm i -g` 或 Claude Code 自更新 | `sudo claude-egress-guard verify --deep`（备用路径会自动补回） |
+| 官方安装器更新改写了 `~/.local/bin/claude` | 经任一闸门路径启动一次 `claude` 自愈，再跑 `verify --deep` |
 | 代理出口变了 | `sudo claude-egress-guard set-exit --ip 新地址 --country CC` |
 | 代理改走远程中转 | 用 `--allow` 加中转地址，再 `verify --deep` |
 | 不要内核白名单 | 设 `STRICT_NET=0` 再 `verify`（会出现 WARN），进程树出口不再强制 |
@@ -292,6 +295,7 @@ cd claude-egress-guard
 
 # 一条命令，参数和 curl 版一致
 sudo ./install.sh --proxy http://127.0.0.1:1080 --exit-ip 203.0.113.10 --country JP
+# 官方安装器的布局：加 --native-path ~/.local/bin/claude
 
 # 或者直接驱动 CLI
 sudo skills/claude-egress-guard/scripts/claude-egress-guard install \
@@ -303,7 +307,7 @@ sudo skills/claude-egress-guard/scripts/claude-egress-guard install \
 ## 开发与测试
 
 ```bash
-make check        # shellcheck + 44 项自测 + 泄漏扫描
+make check        # shellcheck + 52 项自测 + 泄漏扫描
 make test         # 只跑沙箱自测（不需要 root，不联网）
 make lint
 make scan
@@ -325,7 +329,7 @@ skills/claude-egress-guard/
   scripts/claude-egress-guard   安装/验证/演练/卸载 CLI
   scripts/guard-claude.sh   闸门本体（安装为 `claude`）
   scripts/egress-check.sh   出口检查器（可单独运行）
-  scripts/selftest.sh       44 项沙箱断言
+  scripts/selftest.sh       52 项沙箱断言
   templates/                策略文件示例
 tools/leak-scan.py          拦截凭据、个人标识和非文档网段
 ```

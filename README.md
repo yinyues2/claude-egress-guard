@@ -165,6 +165,7 @@ issue real requests from inside the jail.
 claude  (any entry point: shell, Python, cron, systemd, absolute path)
   └─ /usr/local/bin/claude           gate: exit check -> proxy env -> jail
        ├─ /usr/bin/claude            same gate (npm updates rewrite this; it self-heals)
+       ├─ ~/.local/bin/claude        optional vendor path (--native-path); also self-heals
        └─ /opt/claude-real/claude    real binary (symlink, follows package updates)
             └─ your proxy            127.0.0.1:1080 -> expected exit address
 ```
@@ -209,7 +210,8 @@ short-circuit before the probe.
 | Shell | bash 4.3+ |
 | Tools | `curl`, `install`, `readlink`, `mktemp`, `awk`, `sed` |
 | Privileges | root for a real install; `--prefix` for an unprivileged sandbox |
-| Claude Code | already installed, npm-global or native installer |
+| Claude Code | already installed: vendor installer (`~/.local/bin`, add `--native-path`) or npm-global |
+| Memory | 4 GB (the vendor's published minimum; 2 GB only with swap) |
 | Proxy | local HTTP or mixed endpoint (SOCKS-only is not usable through the client's proxy variables) |
 
 Verified against: Debian 13 / systemd 257 / Claude Code 2.1.296 (npm-global),
@@ -289,6 +291,7 @@ never refused" and "here are the eleven times it did".
 | Event | Action |
 | --- | --- |
 | `npm i -g` or Claude Code self-update | `sudo claude-egress-guard verify --deep` (the alt path is repaired automatically) |
+| Vendor installer update replaced `~/.local/bin/claude` | start `claude` once through a gated path to heal the pin, then `verify --deep` |
 | Proxy exit changed | `sudo claude-egress-guard set-exit --ip NEW --country CC` |
 | Proxy moved to a remote relay | add the relay address with `--allow`, then `verify --deep` |
 | Want no kernel jail | set `STRICT_NET=0`, then `verify` (expect a WARN); process-tree egress is no longer enforced |
@@ -327,6 +330,7 @@ cd claude-egress-guard
 
 # one command, same flags as the curl form
 sudo ./install.sh --proxy http://127.0.0.1:1080 --exit-ip 203.0.113.10 --country JP
+# vendor installer layout: add --native-path ~/.local/bin/claude
 
 # or drive the CLI directly
 sudo skills/claude-egress-guard/scripts/claude-egress-guard install \
@@ -338,7 +342,7 @@ sudo skills/claude-egress-guard/scripts/claude-egress-guard install \
 ## Development
 
 ```bash
-make check        # shellcheck + 44 self-tests + leak scan
+make check        # shellcheck + 52 self-tests + leak scan
 make test         # sandboxed suite only (no root, no network)
 make lint
 make scan
@@ -361,7 +365,7 @@ skills/claude-egress-guard/
   scripts/claude-egress-guard   installer/verifier/drill/uninstall CLI
   scripts/guard-claude.sh   the gate (installed as `claude`)
   scripts/egress-check.sh   exit checker (standalone runnable)
-  scripts/selftest.sh       44 sandboxed assertions
+  scripts/selftest.sh       52 sandboxed assertions
   templates/                example policy file
 tools/leak-scan.py          blocks credentials, PII and non-documentation IPs
 ```

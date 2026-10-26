@@ -14,7 +14,7 @@
 # Everything it replaces is copied to the backup directory first.
 set -u
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 MARKER="claude-egress-guard"
 
 CONF_REL="/etc/claude-egress-guard.conf"
@@ -107,6 +107,9 @@ INSTALL OPTIONS
                      loopback and the host resolver are always added
   --strict-net MODE  on|off kernel jail for the Claude process tree (default on)
   --real PATH        real Claude binary (auto-detected when omitted)
+  --native-path PATH gate the vendor installer's binary too, e.g.
+                     ~/.local/bin/claude (it sits earlier in PATH than
+                     /usr/local/bin, so an ungated copy defeats the gate)
   --no-alt           do not mirror the gate to <prefix>/usr/bin/claude
   --prefix DIR       install under DIR instead of / (used by tests)
   --dry-run          print the plan without writing anything
@@ -137,11 +140,19 @@ EOF
 # install
 # ---------------------------------------------------------------------------
 discover_real() {
-	local explicit="$1" alt_conf="$2" dir cand
+	local explicit="$1" alt_conf="$2" native_conf="${3:-}" dir cand
 	if [ -n "$explicit" ]; then
 		[ -x "$explicit" ] || die "--real is not executable: $explicit"
 		readlink -f -- "$explicit"
 		return 0
+	fi
+	# The vendor installer's binary: ~/.local/bin/claude -> .../versions/<ver>
+	if [ -n "$native_conf" ] && [ -L "$native_conf" ]; then
+		cand=$(readlink -f -- "$native_conf" 2>/dev/null || true)
+		if [ -n "$cand" ] && [ -x "$cand" ] && ! is_gate "$cand"; then
+			printf '%s\n' "$cand"
+			return 0
+		fi
 	fi
 	if [ -n "$alt_conf" ] && [ -L "$alt_conf" ]; then
 		cand=$(readlink -f -- "$alt_conf" 2>/dev/null || true)
@@ -180,7 +191,7 @@ resolver_allow() {
 
 cmd_install() {
 	local proxy="" exit_ip="" country="" strict="on" real="" no_alt="0" dry="0"
-	local allow_extra="" alt_conf=""
+	local allow_extra="" alt_conf="" native_path="" native_conf=""
 
 	while [ $# -gt 0 ]; do
 		case "$1" in
@@ -190,6 +201,7 @@ cmd_install() {
 			--allow) allow_extra="$allow_extra ${2:-}"; shift 2 ;;
 			--strict-net) strict="${2:-}"; shift 2 ;;
 			--real) real="${2:-}"; shift 2 ;;
+			--native-path) native_path="${2:-}"; shift 2 ;;
 			--no-alt) no_alt="1"; shift ;;
 			--prefix) PREFIX="${2:-}"; shift 2 ;;
 			--dry-run) dry="1"; shift ;;
@@ -232,8 +244,13 @@ cmd_install() {
 	allow_all=$(printf '%s' "$allow_all" | tr -s ' ' | sed 's/^ //;s/ $//')
 
 	[ "$no_alt" = "1" ] && alt_conf="" || alt_conf=$(p "/usr/bin/claude")
+	if [ -n "$native_path" ]; then
+		native_conf=$(p "$native_path")
+		[ -e "$native_conf" ] || [ -L "$native_conf" ] ||
+			die "--native-path does not exist: $native_conf"
+	fi
 
-	real_bin=$(discover_real "$real" "$alt_conf") ||
+	real_bin=$(discover_real "$real" "$alt_conf" "$native_conf") ||
 		die "no real claude binary found; pass --real /path/to/claude"
 
 	local guard_src check_src
@@ -247,7 +264,7 @@ cmd_install() {
 	say "  real binary   : $real_bin"
 	say "  strict jail   : $strict"
 	say "  jail allow    : $allow_all"
-	say "  gate paths    : $bindir/claude${alt_conf:+, $alt_conf}"
+	say "  gate paths    : $bindir/claude${alt_conf:+, $alt_conf}${native_conf:+, $native_conf}"
 	say "  config        : $conf"
 	if [ "$dry" = "1" ]; then
 		say "dry run - nothing written"
@@ -261,7 +278,7 @@ cmd_install() {
 
 	# Back up whatever the gate is about to replace.
 	local target
-	for target in "$bindir/claude" "$alt_conf"; do
+	for target in "$bindir/claude" "$alt_conf" "$native_conf"; do
 		[ -n "$target" ] || continue
 		[ -e "$target" ] || [ -L "$target" ] || continue
 		is_gate "$target" && continue
@@ -278,6 +295,11 @@ cmd_install() {
 		rm -f -- "$alt_conf"
 		install -m 0755 -- "$lib/guard-claude.sh" "$alt_conf"
 	fi
+	if [ -n "$native_conf" ]; then
+		mkdir -p -- "$(dirname -- "$native_conf")"
+		rm -f -- "$native_conf"
+		install -m 0755 -- "$lib/guard-claude.sh" "$native_conf"
+	fi
 	install -m 0755 -- "$0" "$sbin/claude-egress-guard"
 	ln -sfn -- "$real_bin" "$realdir/claude"
 
@@ -293,6 +315,7 @@ cmd_install() {
 		printf 'REAL_BIN=%q\n' "$realdir/claude"
 		printf 'CHECK_BIN=%q\n' "$lib/egress-check.sh"
 		printf 'ALT_PATH=%q\n' "$alt_conf"
+		printf 'NATIVE_PATH=%q\n' "$native_conf"
 		printf 'LOG_REFUSALS=0\n'
 		printf 'CHECK_TIMEOUT=6\n'
 		printf 'TRACE_URL="https://www.cloudflare.com/cdn-cgi/trace"\n'
@@ -343,6 +366,30 @@ cmd_verify() {
 			pass "gate mirrored: $ALT_PATH"
 		else
 			fail "alternative path is not the gate: $ALT_PATH"
+		fi
+	fi
+	if [ -n "${NATIVE_PATH:-}" ]; then
+		if is_gate "$NATIVE_PATH"; then
+			pass "vendor path gated: $NATIVE_PATH"
+		elif [ -L "$NATIVE_PATH" ]; then
+			fail "vendor path reverted to a symlink after an update: $NATIVE_PATH (start claude once to heal)"
+		else
+			fail "vendor path is not the gate: $NATIVE_PATH"
+		fi
+	fi
+
+	# PATH precedence is the quiet failure: an ungated ~/.local/bin/claude wins
+	# over the gate in every interactive shell, and nothing else notices.
+	if [ -z "$PREFIX" ]; then
+		local res
+		if res=$(command -v claude 2>/dev/null) && [ -n "$res" ]; then
+			if is_gate "$res"; then
+				pass "PATH resolves to the gate: $res"
+			else
+				fail "PATH resolves to an ungated claude: $res (gate it with --native-path, or remove it)"
+			fi
+		else
+			warn "claude is not on PATH"
 		fi
 	fi
 
@@ -559,11 +606,19 @@ cmd_preflight() {
 		pf_add node WARN "not installed (needed for the npm install path)"
 	fi
 
-	local gate_path real
+	local gate_path real res
 	gate_path="$(p "$BIN_REL")/claude"
 	if [ -x "$gate_path" ] && is_gate "$gate_path"; then
 		real=$(readlink -f -- "$(p "$REAL_REL")/claude" 2>/dev/null || true)
 		pf_add claude PASS "gated: ${real:-$gate_path}"
+		res=$(command -v claude 2>/dev/null || true)
+		if [ -n "$res" ] && ! is_gate "$res"; then
+			pf_add claude-path FAIL "PATH resolves to an ungated binary: $res"
+		elif [ -n "$res" ]; then
+			pf_add claude-path PASS "$res"
+		else
+			pf_add claude-path WARN "gate installed but claude is not on PATH"
+		fi
 	elif real=$(discover_real "" "") && [ -n "$real" ]; then
 		pf_add claude WARN "installed but not gated yet: $real"
 	else
@@ -756,6 +811,12 @@ cmd_uninstall() {
 	local state latest rel dest f
 	state=$(p "$STATE_REL")
 	latest=$(ls -1d "$state"/backup/*/ 2>/dev/null | sort | tail -n 1 || true)
+	# Read the policy so the vendor path and mirror are removed too, not just
+	# the two default locations.
+	if [ -r "$(p "$CONF_REL")" ]; then
+		# shellcheck source=/dev/null
+		. "$(p "$CONF_REL")"
+	fi
 
 	if [ -n "$latest" ]; then
 		say "restoring files from $latest"
@@ -763,7 +824,7 @@ cmd_uninstall() {
 			[ -n "$f" ] || continue
 			rel="${f#"$latest"}"
 			case "$rel" in
-				usr/local/bin/claude | usr/bin/claude) ;;
+				*/claude) ;;
 				*) continue ;;
 			esac
 			dest="${PREFIX}/${rel}"
@@ -775,6 +836,10 @@ cmd_uninstall() {
 
 	rm -f -- "$(p "$BIN_REL")/claude"
 	rm -f -- "$(p "$SBIN_REL")/claude-egress-guard"
+	# Only delete the extra paths if they still hold the gate; a restored original
+	# (symlink or binary) must survive.
+	[ -n "${ALT_PATH:-}" ] && is_gate "$ALT_PATH" && rm -f -- "$ALT_PATH"
+	[ -n "${NATIVE_PATH:-}" ] && is_gate "$NATIVE_PATH" && rm -f -- "$NATIVE_PATH"
 	rm -f -- "$(p "$CONF_REL")"
 	rm -rf -- "$(p "$LIB_REL")"
 	rm -f -- "$(p "$REAL_REL")/claude"

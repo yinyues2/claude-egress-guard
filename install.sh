@@ -11,7 +11,7 @@
 set -u
 
 REPO="yinyues2/claude-egress-guard"
-PINNED_REF="v1.3.0"
+PINNED_REF="v1.4.0"
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 WORK=""
 
@@ -40,8 +40,10 @@ OPTIONS
   --country CC       two-letter country to enforce (optional)
   --allow LIST       extra CIDRs inside the kernel jail, comma separated
   --strict-net MODE  on|off kernel jail (default on)
+  --native-path PATH also gate the vendor installer's binary, e.g.
+                     ~/.local/bin/claude (it wins over /usr/local/bin in PATH)
   --prefix DIR       install under DIR instead of / (testing)
-  --ref REF          release tag or branch to download (default: v1.1.0)
+  --ref REF          release tag or branch to download (default: the pinned tag)
   --dry-run          show the install plan only
   --yes              do not prompt
   --skill-only       copy the agent skill into a skills directory instead
@@ -61,6 +63,7 @@ EXIT_IP=""
 COUNTRY=""
 ALLOW=""
 STRICT=""
+NATIVE_PATH=""
 PREFIX=""
 REF="$PINNED_REF"
 DRY="0"
@@ -76,6 +79,7 @@ while [ $# -gt 0 ]; do
 		--country) COUNTRY="${2:-}"; shift 2 ;;
 		--allow) ALLOW="${2:-}"; shift 2 ;;
 		--strict-net) STRICT="${2:-}"; shift 2 ;;
+		--native-path) NATIVE_PATH="${2:-}"; shift 2 ;;
 		--prefix) PREFIX="${2:-}"; shift 2 ;;
 		--ref) REF="${2:-}"; shift 2 ;;
 		--dry-run) DRY="1"; shift ;;
@@ -185,6 +189,7 @@ args=(install --proxy "$PROXY" --exit-ip "$EXIT_IP")
 [ -n "$COUNTRY" ] && args+=(--country "$COUNTRY")
 [ -n "$ALLOW" ] && args+=(--allow "$ALLOW")
 [ -n "$STRICT" ] && args+=(--strict-net "$STRICT")
+[ -n "$NATIVE_PATH" ] && args+=(--native-path "$NATIVE_PATH")
 [ -n "$PREFIX" ] && args+=(--prefix "$PREFIX")
 [ "$DRY" = "1" ] && args+=(--dry-run)
 
